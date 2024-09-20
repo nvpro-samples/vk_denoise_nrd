@@ -1,0 +1,9 @@
+shaders/*.spv
+build/*
+autogen/*
+_autogen/*
+spv/*
+*/_autogen/
+_build/*
+*/_build/*
+externals/*
