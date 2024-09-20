@@ -1,0 +1,79 @@
+/*
+ * Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+// by Jan Eric Kyprianidis <www.kyprianidis.com>
+
+#version 450
+
+#extension GL_EXT_shader_image_load_formatted : enable  // The folowing extension allow to pass images as function parameters
+#extension GL_GOOGLE_include_directive : require
+
+#include "host_device.h"
+
+// clang-format off
+layout(set = 0, binding = eInImage) uniform image2D iImage0;  
+layout(set = 0, binding = eOutImage) uniform image2D oImage;
+layout(push_constant) uniform  params_ {float alpha;};
+// clang-format on
+
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// From https://www.shadertoy.com/view/tsjfRh
+vec3 TAA(in ivec2 fragCoord)
+{
+  // Get the neighborhood min / max from this frame's render
+  vec3 center   = imageLoad(iImage0, fragCoord).rgb;
+  vec3 minColor = center;
+  vec3 maxColor = center;
+  for(int iy = -1; iy <= 1; ++iy)
+  {
+    for(int ix = -1; ix <= 1; ++ix)
+    {
+      if(ix == 0 && iy == 0)
+        continue;
+
+      ivec2 offsetUV = fragCoord + ivec2(ix, iy);
+      vec3  color    = imageLoad(iImage0, offsetUV).rgb;
+      minColor       = min(minColor, color);
+      maxColor       = max(maxColor, color);
+    }
+  }
+
+  // Get last frame's pixel and clamp it to the neighborhood of this frame
+  vec3 old = imageLoad(oImage, fragCoord).rgb;
+  old      = clamp(old, minColor, maxColor);
+
+  // Interpolate from the clamped old color to the new color.
+  vec3 pixelColor = mix(old, center, alpha);
+  return pixelColor;
+}
+
+
+void main()
+{
+  ivec2 imgSize   = imageSize(oImage);
+  ivec2 fragCoord = ivec2(gl_GlobalInvocationID.xy);
+  if(fragCoord.x >= imgSize.x || fragCoord.y >= imgSize.y)  // Check limits
+    return;
+
+  vec3 R = TAA(fragCoord);
+
+  imageStore(oImage, fragCoord, vec4(R, 0));
+}

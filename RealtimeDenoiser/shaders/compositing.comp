@@ -1,0 +1,129 @@
+/*
+ * Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#version 450
+
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_image_load_formatted : require
+#extension GL_EXT_scalar_block_layout : enable
+
+#include "host_device.h"
+#include "nrd.glsl"
+#include "nvvkhl/shaders/dh_tonemap.h"
+
+
+// clang-format off
+layout(set = 0, binding = eCompImage) uniform writeonly image2D oImage;
+layout(set = 0, binding = eInDirect) uniform readonly image2D iDirect;
+layout(set = 0, binding = eInDiff) uniform readonly image2D iDiff;
+layout(set = 0, binding = eInSpec) uniform readonly image2D iSpec;
+layout(set = 0, binding = eInBaseColor_Metalness) uniform readonly image2D iBaseColor_Metalness;
+layout(set = 0, binding = eInNormal_Roughness) uniform readonly image2D iNormal_Roughness;
+layout(set = 0, binding = eInViewZ) uniform readonly image2D iViewZ;
+layout(set = 0, binding = eInFrameInfo) uniform FrameInfo_ { FrameInfo frameInfo; };
+
+layout(push_constant, scalar) uniform RtxPushConstant_
+{
+  RtxPushConstant pc;
+};
+
+// clang-format on
+
+layout(local_size_x = GRID_SIZE, local_size_y = GRID_SIZE) in;
+
+vec3 ReconstructViewPosition(vec2 uv, float viewZ)
+{
+  vec4 p;
+  p = frameInfo.projInv * vec4((uv * 2.0 - vec2(1.0)), 0.0, 1.0);
+  p /= p.w;
+  p.xyz *= viewZ / p.z;
+
+  p = frameInfo.viewInv * p;
+
+  return p.xyz;
+}
+
+// Composite final image from denoised diffuse and specular channels
+// as well as the direct lighting channel
+void main()
+{
+  ivec2 imgSize   = imageSize(oImage);
+  ivec2 fragCoord = ivec2(gl_GlobalInvocationID.xy);
+  if(fragCoord.x >= imgSize.x || fragCoord.y >= imgSize.y)  // Check limits
+    return;
+
+  vec4 directLighting = imageLoad(iDirect, fragCoord);
+  vec3 R              = vec3(directLighting);
+
+  if(directLighting.a > 0)  // directLight.a == 0 denotes "just skybox visible"
+  {
+    vec3 indirectDiff;
+    vec3 indirectSpec;
+
+    if(pc.method == NRD_REBLUR)
+    {
+      indirectDiff = REBLUR_BackEnd_UnpackRadianceAndNormHitDist(imageLoad(iDiff, fragCoord)).rgb;
+      indirectSpec = REBLUR_BackEnd_UnpackRadianceAndNormHitDist(imageLoad(iSpec, fragCoord)).rgb;
+    }
+    else if(pc.method == NRD_RELAX)
+    {
+      indirectDiff = RELAX_BackEnd_UnpackRadiance(imageLoad(iDiff, fragCoord)).rgb;
+      indirectSpec = RELAX_BackEnd_UnpackRadiance(imageLoad(iSpec, fragCoord)).rgb;
+    }
+    else  // Reference Denoiser
+    {
+      indirectDiff = imageLoad(iDiff, fragCoord).rgb;
+      indirectSpec = imageLoad(iSpec, fragCoord).rgb;
+    }
+
+    // normalized pixel coordinate
+    vec2 pixelUv = (vec2(fragCoord) + vec2(0.5) + frameInfo.jitter) / vec2(imgSize);
+
+    // Reconstruct pixel's world position
+    float viewZ = imageLoad(iViewZ, fragCoord).x;
+    vec3  Pw    = ReconstructViewPosition(pixelUv, viewZ);
+
+    // view vector, normal vector, material roughness
+    // This could likely be done simpler. We should not need Pw. V could be
+    // derived from just fragCoord and the inverse projection matrix.
+    vec3 V           = normalize(frameInfo.viewInv[3].xyz - Pw);
+    vec4 N_roughness = NRD_FrontEnd_UnpackNormalAndRoughness(imageLoad(iNormal_Roughness, fragCoord));
+
+    // Material properties at pixel coordinate needed to do re-modulation of diffuse and specular
+    vec4 baseColorMetalness = imageLoad(iBaseColor_Metalness, fragCoord);
+    vec3 baseColor          = toLinear(baseColorMetalness.rgb);
+
+    vec3 albedo, Rf0;
+    ConvertBaseColorMetalnessToAlbedoRf0(baseColor, baseColorMetalness.w, albedo, Rf0);
+
+    // Environment ( pre-integrated ) specular term
+    float NoV  = dot(N_roughness.xyz, V);
+    vec3  Fenv = EnvironmentTerm_Rtg(Rf0, NoV, N_roughness.w);
+
+    vec3 diffDemodulate = baseColor * 0.99 + 0.01;
+    vec3 specDemodulate = Fenv * 0.99 + 0.01;
+
+    // Composition
+    R += indirectDiff * diffDemodulate;
+    R += indirectSpec * specDemodulate;
+  }
+
+  imageStore(oImage, fragCoord, vec4(R, 1.0));
+}

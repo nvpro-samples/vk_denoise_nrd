@@ -1,0 +1,623 @@
+/*
+ * Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION
+ * SPDX-License-Identifier: Apache-2.0
+ */
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_buffer_reference2 : require
+#extension GL_EXT_scalar_block_layout : enable
+#extension GL_EXT_nonuniform_qualifier : enable
+#extension GL_EXT_shader_image_load_formatted : enable
+#extension GL_ARB_shader_clock : enable
+#extension GL_EXT_debug_printf : enable
+
+#include "nvvkhl/shaders/bsdf_functions.h"
+#include "nvvkhl/shaders/dh_scn_desc.h"
+#include "nvvkhl/shaders/dh_tonemap.h"
+#include "nvvkhl/shaders/dh_hdr.h"
+#include "nvvkhl/shaders/func.h"
+#include "nvvkhl/shaders/random.h"
+#include "nvvkhl/shaders/vertex_accessor.h"
+
+#include "host_device.h"
+#include "ray_common.glsl"
+
+// clang-format off
+layout(location = 0) rayPayloadEXT HitPayload payload;
+layout(location = 1) rayPayloadEXT HitPayloadNrd payloadNrd;
+
+layout(set = 0, binding = eTlas) uniform accelerationStructureEXT topLevelAS;
+
+
+layout(set = 1, binding = eFrameInfo)         uniform FrameInfo_ { FrameInfo frameInfo; };
+layout(set = 1, binding = eSceneDesc) readonly buffer SceneDesc_ { SceneDescription sceneDesc; };
+layout(set = 1, binding = eTextures)          uniform sampler2D texturesMap[]; // all textures
+
+// Store direct lighting from emissive surfaces, lights and env. map
+layout(set = 2, binding = eDirectLighting)    uniform image2D nrdDirectLighting;
+// Store object motion (currently not utilized)
+layout(set = 2, binding = eObjectMotion)      uniform image2D nrdObjectMotion;
+// Store NRD's normal and roughness encoding
+layout(set = 2, binding = eNormal_Roughness)  uniform image2D nrdNormalRoughness;
+// Store linear-Z along the camera axis in viewspace
+layout(set = 2, binding = eViewZ)             uniform image2D nrdViewZ;
+// Store the noisy demodulated diffuse lighting
+layout(set = 2, binding = eUnfiltered_Diff)   uniform image2D nrdUDiff;
+// Store the noisy demodulated specular lighting
+layout(set = 2, binding = eUnfiltered_Spec)   uniform image2D nrdUSpec;
+// Store the material base color and metalness (to be used in composition)
+layout(set = 2, binding = eBaseColor_Metalness) uniform image2D nrdBaseColorMetalness;
+
+layout(set = 3, binding = eImpSamples,  scalar)	buffer _EnvAccel { EnvAccel envSamplingData[]; };
+layout(set = 3, binding = eHdr) uniform sampler2D hdrTexture;
+
+layout(buffer_reference, scalar) readonly buffer Materials { GltfShadeMaterial m[]; };
+
+// clang-format on
+#include "nrd.glsl"
+#include "nvvkhl/shaders/pbr_mat_struct.h"
+#include "nvvkhl/shaders/pbr_mat_eval.h"
+#include "nvvkhl/shaders/hdr_env_sampling.h"
+#include "nvvkhl/shaders/ray_util.h"
+
+
+layout(push_constant, scalar) uniform RtxPushConstant_
+{
+  RtxPushConstant pc;
+};
+
+struct HitState
+{
+  vec3  pos;
+  vec3  nrm;
+  vec3  geonrm;
+  vec2  uv;
+  vec3  tangent;
+  vec3  bitangent;
+  float bitangentSign;
+};
+
+// Material ID
+#define MATERIAL_ID_DEFAULT 0
+#define MATERIAL_ID_METAL 1
+#define MATERIAL_ID_PSR 2
+#define MATERIAL_ID_HAIR 3
+
+//-----------------------------------------------------------------------
+// Direct contribution from all lights (no HDR environment)
+//-----------------------------------------------------------------------
+vec3 DirectLight(PbrMaterial matEval, HitState hitState, vec3 toEye)
+{
+  vec3 contribRadiance = vec3(0);
+#if NB_LIGHTS > 0
+
+  uint nbLight = NB_LIGHTS;
+
+  for(int light_index = 0; light_index < nbLight; light_index++)
+  {
+    Light light = frameInfo.light[light_index];
+
+    vec3  lightDir;
+    vec3  lightContrib = lightContribution(light, hitState.pos, hitState.nrm, lightDir);
+    float lightDist    = (light.type != 0) ? 1e37f : length(hitState.pos - light.position);
+    float dotNL        = dot(lightDir, hitState.nrm);
+
+    if(dotNL > 0.0)
+    {
+      float lightPdf = 1.0f / float(NB_LIGHTS);
+
+      float pdf      = 0;
+      vec3  brdf     = pbrEval(matEval, toEye, lightDir, pdf);
+      vec3  radiance = brdf * dotNL * lightContrib / lightPdf;
+
+      // Shadow ray - stop at the first intersection, don't invoke the closest hitState shader (fails for transparent objects)
+      uint rayflag = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT | gl_RayFlagsCullBackFacingTrianglesEXT;
+
+      payload.hitT = 0;
+      traceRayEXT(topLevelAS, rayflag, 0xFF, SBTOFFSET_PATHTRACE, 0, MISSINDEX_PATHTRACE, hitState.pos, 0.001, lightDir,
+                  lightDist, PAYLOAD_PATHTRACE);
+      // If hitting nothing, add light contribution
+      if(payload.hitT == NRD_INF)
+        contribRadiance += radiance;
+    }
+  }
+#endif
+
+  return vec3(contribRadiance);
+}
+
+//-----------------------------------------------------------------------
+// Direct contribution of the HDR environment
+//-----------------------------------------------------------------------
+void HdrContrib(in PbrMaterial pbrMat, in vec3 startPos, in vec3 toEye, out vec3 diffuseRadiance, out vec3 specularRadiance)
+{
+  diffuseRadiance  = vec3(0);
+  specularRadiance = vec3(0);
+  vec3 lightDir;
+
+  vec3 randVal = vec3(rand(payload.seed), rand(payload.seed), rand(payload.seed));
+  // Sample envmap in random direction, return direction in 'lightDir' and pdf in the sampled texture value
+  vec4 radiance_pdf = environmentSample(hdrTexture, randVal, lightDir);
+  // adjustable HDR intensity factor passed in as clearColor
+  vec3  lightContrib = radiance_pdf.xyz * frameInfo.clearColor.xyz;
+  float lightPdf     = radiance_pdf.w;
+
+  // rotate returned direction into worldspace
+  lightDir    = rotate(lightDir, vec3(0, 1, 0), frameInfo.envRotation);
+  float dotNL = dot(lightDir, pbrMat.N);
+
+  // above surface?
+  if(dotNL > 0.0 && lightPdf > 0.0)
+  {
+    vec3 diffRadiance;
+    vec3 specRadiance;
+
+    BsdfEvaluateData bsdfEval;
+    bsdfEval.k1 = toEye;
+    bsdfEval.k2 = lightDir;
+    bsdfEval.xi = randVal;
+
+    bsdfEvaluate(bsdfEval, pbrMat);
+
+    if(bsdfEval.pdf > 0.0)
+    {
+      // We are potentially going to sample the environment map twice: once
+      // via direct sampling (as performed here) using the envmap's PDF.
+      // The other time is when following the pathtracer via the BSDF's PDF and
+      // hitting the environment map.
+      const float mis_weight = powerHeuristic(lightPdf, bsdfEval.pdf);
+
+      vec3 lightRadiance = mis_weight * lightContrib / lightPdf;
+      // Material's diffuse response to envmap irradiance
+      diffRadiance = bsdfEval.bsdf_diffuse * lightRadiance;
+      // Material's specular/glossy response to envmap irradiance
+      specRadiance = bsdfEval.bsdf_glossy * lightRadiance;
+
+      // Shadow ray - stop at the first intersection, don't invoke the closest hit shader (fails for transparent objects)
+      uint rayflag = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT | gl_RayFlagsCullBackFacingTrianglesEXT;
+      payload.hitT = 0;
+      traceRayEXT(topLevelAS, rayflag, 0xFF, SBTOFFSET_PATHTRACE, 0, MISSINDEX_PATHTRACE, startPos, 0.001, lightDir,
+                  NRD_INF, PAYLOAD_PATHTRACE);
+
+      // If ray to sky is not blocked, this is the environment light contribution
+      // coming off the surface's location.
+      if(payload.hitT == NRD_INF)
+      {
+        diffuseRadiance  = diffRadiance;
+        specularRadiance = specRadiance;
+      }
+    }
+  }
+}
+
+//-----------------------------------------------------------------------
+// Build Hit information from the payload's returned data and evaluate the
+// material at the hit position
+//-----------------------------------------------------------------------
+void buildHitInfo(in HitPayloadNrd payload, in vec3 rayOrigin, in vec3 rayDirection, inout PbrMaterial pbrMat, inout HitState hitState)
+{
+  // Retrieve the Primitive mesh buffer information
+  RenderNode      renderNode = RenderNodeBuf(sceneDesc.renderNodeAddress)._[payload.renderNodeIndex];
+  RenderPrimitive renderPrim = RenderPrimitiveBuf(sceneDesc.renderPrimitiveAddress)._[payload.renderPrimIndex];
+
+  // Calculate hitState position, normal tangent etc
+  hitState.pos           = rayOrigin + payload.hitT * rayDirection;
+  hitState.nrm           = payload.normal_envmapRadiance;
+  hitState.geonrm        = hitState.nrm;
+  hitState.uv            = payload.uv;
+  hitState.tangent       = payload.tangent.xyz;
+  hitState.bitangent     = cross(hitState.nrm, hitState.tangent);
+  hitState.bitangentSign = payload.bitangentSign;
+
+  // Scene materials
+  uint      matIndex  = max(0, renderNode.materialID);  // material of primitive mesh
+  Materials materials = Materials(sceneDesc.materialAddress);
+
+  // Material of the object and evaluated material (includes textures)
+  GltfShadeMaterial mat = materials.m[matIndex];
+  pbrMat                = evaluateMaterial(mat, hitState.nrm, hitState.tangent, hitState.bitangent, hitState.uv);
+
+  if(pc.overrideRoughness > 0)
+  {
+    pbrMat.roughness = vec2(clamp(pc.overrideRoughness, MICROFACET_MIN_ROUGHNESS, 1.0));
+    pbrMat.roughness *= pbrMat.roughness;
+  }
+  if(pc.overrideMetallic > 0)
+  {
+    pbrMat.metallic = pc.overrideMetallic;
+  }
+}
+
+//-----------------------------------------------------------------------
+// ENTRY function
+//-----------------------------------------------------------------------
+void main()
+{
+  ivec2 pixelPos = ivec2(gl_LaunchIDEXT.xy);
+
+  // Initialize the random number
+  payload.seed = xxhash32(uvec3(gl_LaunchIDEXT.xy, pc.frame));
+
+  vec2 pixelCenter = ivec2(gl_LaunchIDEXT.xy) + 0.5;
+
+  pixelCenter += frameInfo.jitter;
+
+  const vec2 inUV         = pixelCenter / vec2(gl_LaunchSizeEXT.xy);
+  const vec2 d            = inUV * 2.0 - 1.0;
+  vec3       origin       = (frameInfo.viewInv * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+  const vec3 eyePos       = origin.xyz;
+  const vec4 target       = frameInfo.projInv * vec4(d.x, d.y, 0.01, 1.0);
+  vec3       direction    = mat3(frameInfo.viewInv) * normalize(target.xyz);
+  const vec3 orgDirection = direction;
+  vec3       toEye        = -direction.xyz;
+  const uint rayFlags     = gl_RayFlagsCullBackFacingTrianglesEXT;
+
+  PbrMaterial pbrMat;  // Material at hitState position
+  HitState    hitState;
+
+  // Result of trace
+  bool  hitSky            = false;
+  bool  isPsr             = false;
+  float psrHitDist        = 0.0;
+  vec3  psrThroughput     = vec3(1.0);
+  vec3  psrDirectRadiance = vec3(0.0);
+  mat3  psrMirror         = mat3(1.0);  // identity
+
+  //====================================================================================================================
+  // STEP 1 - Find first non-mirror primary hit.
+  // The first non-mirror hit surface is used as 'Primary Surface Replacement'.
+  // Collect G-Buffer material & hitState information.
+  // #PSR
+  //====================================================================================================================
+  int psrDepth = 0;
+  do
+  {
+    payloadNrd.hitT = 0;
+    // Trace using nrd.rchit, nrd.rmiss and NrdPayload
+    traceRayEXT(topLevelAS,     // topLevel
+                rayFlags,       // rayFlags
+                0xFF,           // cullMask
+                SBTOFFSET_NRD,  // sbtRecordOffset
+                0,              // sbtRecordStride
+                MISSINDEX_NRD,  // missIndex
+                origin.xyz,     // offset
+                0.01,           // Tmin
+                direction.xyz,  // direction
+                1e32,           // Tmax
+                PAYLOAD_NRD     // payloadNrd
+    );
+
+    hitSky = (payloadNrd.hitT == NRD_INF);
+    if(hitSky)
+    {
+      psrDirectRadiance += psrThroughput * payloadNrd.normal_envmapRadiance;
+      break;
+    }
+
+    // Accumulate the hit distances along the mirrored reflections - used to calculate the
+    // virtual world PSR position's ViewZ distance
+    psrHitDist += payloadNrd.hitT;
+
+    buildHitInfo(payloadNrd, origin, direction, pbrMat, hitState);
+    origin = offsetRay(hitState.pos, pbrMat.Ng);
+
+    // Did we hit anything other than a mirror?
+    if((pbrMat.roughness.x > ((MICROFACET_MIN_ROUGHNESS * MICROFACET_MIN_ROUGHNESS) + 0.001)) || pbrMat.metallic < 1.0)
+    {
+      break;
+    }
+
+    // At least one mirror hit
+    isPsr = true;
+
+    // Only the glossy part should be non-zero as this is a mirror surface.
+    // The pdf for the mirrored reflection should be infinity
+    psrDirectRadiance += psrThroughput * pbrMat.emissive;
+
+    {
+      BsdfSampleData specBsdfSample;
+      specBsdfSample.xi = vec3(rand(payload.seed), rand(payload.seed), rand(payload.seed));
+      specBsdfSample.k1 = -direction;
+
+      bsdfSample(specBsdfSample, pbrMat);
+
+      // if(specBsdfSample.event_type == BSDF_EVENT_ABSORB)
+      // {
+      //   // Debug: should not be possible as this is a mirror surface
+      //   pbrMat.baseColor = vec3(10.0, 0.0, 10.0);
+      //   break;
+      // }
+
+      psrThroughput *= specBsdfSample.bsdf_over_pdf;
+      psrMirror *= buildMirrorMatrix(pbrMat.N);
+
+      // Follow the mirror
+      direction = reflect(direction, pbrMat.N);
+    }
+
+    ++psrDepth;
+  } while(psrDepth < 5);
+
+  // Early out when hitting sky (even via mirrors)
+  if(hitSky)
+  {
+    imageStore(nrdDirectLighting, pixelPos, vec4(psrDirectRadiance, 0.0));
+    imageStore(nrdUDiff, pixelPos, vec4(0));
+    imageStore(nrdUSpec, pixelPos, vec4(0));
+    imageStore(nrdNormalRoughness, pixelPos, vec4(0));
+    imageStore(nrdViewZ, pixelPos, vec4(-NRD_INF));
+    return;
+  }
+
+  // ViewZ buffer
+  float g_viewZ = (frameInfo.view * vec4(eyePos + orgDirection * psrHitDist, 1.0)).z;  // NOTE: viewZ is the 'Z' of the world hitState position in camera space
+  imageStore(nrdViewZ, pixelPos, vec4(g_viewZ));
+
+  // Normal/Roughness buffer
+  {
+    float materialType = (isPsr ? MATERIAL_ID_PSR : (pbrMat.metallic == 1.0 ? MATERIAL_ID_METAL : MATERIAL_ID_DEFAULT));
+
+    // Transform surface normal from "virtual world normal" to world normal through a series of mirror-matrix.
+    // In case of NOT hitting any mirror, 'psrMirror' is just the identity matrix
+    vec3 worldNormal = psrMirror * pbrMat.N;
+
+    vec4 normalRoughness = NRD_FrontEnd_PackNormalAndRoughness(worldNormal, sqrt(pbrMat.roughness.x), materialType);
+    imageStore(nrdNormalRoughness, pixelPos, normalRoughness);
+  }
+
+  // Tint the material by the accumulated tinting of the mirrors until we reached the PSR
+  // 'psrThroughput' will be (1.0, 1.0, 1.0) when hitting no mirrors.
+  pbrMat.baseColor *= psrThroughput;
+  pbrMat.specularColor *= psrThroughput;
+  pbrMat.emissive = pbrMat.emissive * psrThroughput + psrDirectRadiance;
+
+  // Motion Vector Buffer
+  imageStore(nrdObjectMotion, pixelPos, vec4(0));
+
+  // transform eye vector into "virtual world" for PSR surfaces (identity if primary hit is non-mirror material)
+  // -direction happens to be the same direction as if we did 'toEye = toEye * psrMirror;'
+  toEye = -direction;
+
+  float VdotN                   = dot(toEye, pbrMat.N);
+  float lobeWeights[LOBE_COUNT] = computeLobeWeights(pbrMat, VdotN, pbrMat.baseColor);
+  float diffuseRatio            = lobeWeights[LOBE_DIFFUSE_REFLECTION];
+  float specularRatio           = 1.0F - diffuseRatio;
+
+  {
+    // BaseColor/Metalness Buffer
+    // Needed to reconstruct the full diffuse and specular color from demodulated radiance during composition
+    vec3 writeBaseColor = toSrgb(pbrMat.baseColor);
+    imageStore(nrdBaseColorMetalness, pixelPos, vec4(writeBaseColor, pbrMat.metallic));
+  }
+
+  //====================================================================================================================
+  // STEP 2 - Get the direct light contribution at hitState position
+  //====================================================================================================================
+
+  // Getting contribution of HDR
+  vec3 hdrDiffuseRadiance  = vec3(0);
+  vec3 hdrSpecularRadiance = vec3(0);
+
+  HdrContrib(pbrMat, hitState.pos, toEye, hdrDiffuseRadiance, hdrSpecularRadiance);
+
+  // Contribution of all lights
+  vec3 directLum = DirectLight(pbrMat, hitState, toEye);
+
+  directLum += psrDirectRadiance + pbrMat.emissive;
+
+  imageStore(nrdDirectLighting, pixelPos, vec4(directLum, 1));
+
+
+  //====================================================================================================================
+  // STEP 3 - Get the indirect diffuse contribution at hitState position
+  // #DIFFUSE
+  //====================================================================================================================
+  {
+    vec3  diffuseAccum = hdrDiffuseRadiance;
+    float pathLength   = 0.0;  // if first hit creates absorbtion event, provide a hitdist of 0
+
+    //====================================================================================================================
+    // STEP 3.1 - Sampling direction for diffuse
+    //====================================================================================================================
+
+    BsdfSampleData diffBsdfSample;
+    diffBsdfSample.xi = vec3(rand(payload.seed), rand(payload.seed), rand(payload.seed));
+    diffBsdfSample.k1 = toEye;
+    brdf_diffuse_sample(diffBsdfSample, pbrMat, pbrMat.baseColor);
+
+    if(diffBsdfSample.event_type != BSDF_EVENT_ABSORB)
+    {
+      //====================================================================================================================
+      // STEP 3.2 - Evaluation of throughput for the hitState out going direction
+      //====================================================================================================================
+
+      // Resetting payload
+      payload.contrib      = vec3(0.0);
+      payload.weight       = vec3(1.0);
+      payload.hitT         = NRD_INF;
+      payload.rayDirection = diffBsdfSample.k2;
+      payload.rayOrigin    = origin;
+      payload.bsdfPDF      = diffBsdfSample.pdf;
+
+      //====================================================================================================================
+      // STEP 3.3 - Trace ray from depth 1 and path trace until the ray dies
+      //====================================================================================================================
+      vec3 throughput = diffBsdfSample.bsdf_over_pdf * diffuseRatio;
+
+      for(int depth = 1; depth < pc.maxDepth; depth++)
+      {
+        payload.hitT = NRD_INF;
+        traceRayEXT(topLevelAS, rayFlags, 0xFF, SBTOFFSET_PATHTRACE, 0, MISSINDEX_PATHTRACE, payload.rayOrigin, 0.001,
+                    payload.rayDirection, NRD_INF, PAYLOAD_PATHTRACE);
+
+        // Accumulating results
+        diffuseAccum += payload.contrib * throughput;
+        throughput *= payload.weight;
+
+        // The first secondary path segment determines the hit distance.
+        // If the ray hits the environment, NRD_INF is returned
+        if(depth == 1)
+        {
+          pathLength = payload.hitT;
+        }
+
+        if(payload.hitT == NRD_INF)
+        {
+          break;
+        }
+      }
+
+      // Removing fireflies
+      float lum = dot(diffuseAccum, vec3(0.212671f, 0.715160f, 0.072169f));
+      if(lum > pc.maxLuminance)
+      {
+        diffuseAccum *= pc.maxLuminance / lum;
+      }
+    }
+
+    //====================================================================================================================
+    // STEP 3.4 - Signal de-modulation
+    //====================================================================================================================
+    diffuseAccum /= (pbrMat.baseColor * 0.99 + 0.01);
+
+    //====================================================================================================================
+    // STEP 3.5 - Write accumulated
+    //====================================================================================================================
+    vec4 diffIndirect = vec4(0.0);
+
+    if(pc.method == NRD_REBLUR)
+    {
+      pathLength   = REBLUR_FrontEnd_GetNormHitDist(pathLength, g_viewZ, gDiffHitDistParams, 1.0);
+      diffIndirect = REBLUR_FrontEnd_PackRadianceAndNormHitDist(diffuseAccum, pathLength, USE_SANITIZATION);
+    }
+    else if(pc.method == NRD_RELAX)
+    {
+      diffIndirect = RELAX_FrontEnd_PackRadianceAndHitDist(diffuseAccum, pathLength, USE_SANITIZATION);
+    }
+    else
+    {
+      diffIndirect = vec4(diffuseAccum, 1.0);
+    }
+
+    imageStore(nrdUDiff, pixelPos, diffIndirect);
+  }
+
+  //====================================================================================================================
+  // STEP 4 - Get the indirect specular contribution at hitState position
+  // #SPECULAR
+  //====================================================================================================================
+
+  {
+    //====================================================================================================================
+    // STEP 4.1 - Sampling direction for specular
+    //====================================================================================================================
+    vec3  specularAccum = hdrSpecularRadiance;
+    float pathLength    = 0.0;  // if first hit creates absorbtion event, provide a hitdist of 0
+
+    BsdfSampleData specBsdfSample;
+    specBsdfSample.xi = vec3(rand(payload.seed), rand(payload.seed), rand(payload.seed));
+    specBsdfSample.k1 = toEye;
+
+    // HACK: Bias xi.z so that bsdfSample() only chooses between specular lobes.
+    specBsdfSample.xi.z = (1.0f - lobeWeights[LOBE_DIFFUSE_REFLECTION]) * specBsdfSample.xi.z;
+    bsdfSample(specBsdfSample, pbrMat);
+
+    if(specBsdfSample.event_type != BSDF_EVENT_ABSORB)
+    {
+      //====================================================================================================================
+      // STEP 4.2 - Evaluation of throughput for the hitState out going direction
+      //====================================================================================================================
+
+      // Resetting payload
+      payload.contrib      = vec3(0.0);
+      payload.weight       = vec3(1.0);
+      payload.hitT         = NRD_INF;
+      payload.rayDirection = specBsdfSample.k2;
+      payload.rayOrigin    = origin;
+      payload.bsdfPDF      = specBsdfSample.pdf;
+
+      //====================================================================================================================
+      // STEP 4.3 - Trace ray from depth 1 and path trace until the ray dies
+      //====================================================================================================================
+      vec3 throughput = specBsdfSample.bsdf_over_pdf * specularRatio;
+
+      for(int depth = 1; depth < pc.maxDepth; depth++)
+      {
+        payload.hitT = NRD_INF;
+        traceRayEXT(topLevelAS, rayFlags, 0xFF, SBTOFFSET_PATHTRACE, 0, MISSINDEX_PATHTRACE, payload.rayOrigin, 0.001,
+                    payload.rayDirection, NRD_INF, PAYLOAD_PATHTRACE);
+
+        // Accumulating results
+        specularAccum += payload.contrib * throughput;
+        throughput *= payload.weight;
+
+        // The first secondary path segment determines the hit distance.
+        // If the ray hits the environment, NRD_INF is returned
+        if(depth == 1)
+        {
+          pathLength = payload.hitT;
+        }
+
+        // Breaking on end ray
+        if(payload.hitT == NRD_INF)
+        {
+          break;
+        }
+      }
+
+      // Removing fireflies
+      float lum = dot(specularAccum, vec3(0.212671f, 0.715160f, 0.072169f));
+      if(lum > pc.maxLuminance)
+      {
+        specularAccum *= pc.maxLuminance / lum;
+      }
+    }
+
+    //====================================================================================================================
+    // STEP 4.4 - Signal de-modulation
+    //====================================================================================================================
+    // Environment ( pre-integrated ) specular term
+    vec3 albedo, Rf0;
+    ConvertBaseColorMetalnessToAlbedoRf0(pbrMat.baseColor, pbrMat.metallic, albedo, Rf0);
+    vec3 Fenv = EnvironmentTerm_Rtg(Rf0, max(VdotN, 0.0), sqrt(pbrMat.roughness.x));
+    specularAccum /= (Fenv * 0.99 + 0.01);
+
+    //====================================================================================================================
+    // STEP 4.5 - Write accumulated specular value to buffers
+    //====================================================================================================================
+    vec4 specIndirect = vec4(0.0);
+
+    if(pc.method == NRD_REBLUR)
+    {
+      pathLength   = REBLUR_FrontEnd_GetNormHitDist(pathLength, g_viewZ, gSpecHitDistParams, sqrt(pbrMat.roughness.x));
+      specIndirect = REBLUR_FrontEnd_PackRadianceAndNormHitDist(specularAccum, pathLength, USE_SANITIZATION);
+    }
+    else if(pc.method == NRD_RELAX)
+    {
+      specIndirect = RELAX_FrontEnd_PackRadianceAndHitDist(specularAccum, pathLength, USE_SANITIZATION);
+    }
+    else
+    {
+      specIndirect = vec4(specularAccum, 1.0);
+    }
+
+    // Store final specular color at pixel
+    imageStore(nrdUSpec, pixelPos, specIndirect);
+  }
+}
