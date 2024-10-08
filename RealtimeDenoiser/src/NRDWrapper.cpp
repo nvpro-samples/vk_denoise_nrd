@@ -23,7 +23,6 @@
 #include <nvvk/debug_util_vk.hpp>
 #include <nvvk/error_vk.hpp>
 #include <nvvk/shaders_vk.hpp>
-#include <nvvk/structs_vk.hpp>
 #include <nvh/nvprint.hpp>
 #include <nvvk/commands_vk.hpp>
 
@@ -390,8 +389,8 @@ void NRDWrapper::createPipelines()
 
     const nrd::PipelineDesc& pDesc = iDesc.pipelines[p];
 
-    std::vector<VkDescriptorSetLayoutCreateInfo> descriptorSetLayoutInfos(numPipelineSets,
-                                                                          nvvk::make<VkDescriptorSetLayoutCreateInfo>());
+    std::vector<VkDescriptorSetLayoutCreateInfo> descriptorSetLayoutInfos(
+        numPipelineSets, VkDescriptorSetLayoutCreateInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, nullptr});
     // We make use of push descriptors which makes it so much easier to use and update.
     for(auto& layout : descriptorSetLayoutInfos)
     {
@@ -557,8 +556,7 @@ void NRDWrapper::dispatch(VkCommandBuffer commandBuffer, const nrd::DispatchDesc
 
   NRDPipeline& pipeline = m_pipelines[dispatchDesc.pipelineIndex];
 
-  std::vector<VkWriteDescriptorSet>  descriptorUpdates(pipeline.numBindings + iDesc.samplersNum,
-                                                       nvvk::make<VkWriteDescriptorSet>());
+  std::vector<VkWriteDescriptorSet> descriptorUpdates(pipeline.numBindings + iDesc.samplersNum, VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr});
   std::vector<VkDescriptorImageInfo> descriptorImageInfos(pipeline.numBindings + iDesc.samplersNum);
 
   std::vector<VkImageMemoryBarrier> imageBarriers;
@@ -650,7 +648,7 @@ void NRDWrapper::dispatch(VkCommandBuffer commandBuffer, const nrd::DispatchDesc
 
   if(pDesc.hasConstantData)
   {
-    VkWriteDescriptorSet constantBufferUpdate(nvvk::make<VkWriteDescriptorSet>());
+    VkWriteDescriptorSet constantBufferUpdate{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr};
     constantBufferUpdate.dstBinding      = constantBufferBindingOffset;
     constantBufferUpdate.descriptorCount = 1;
     constantBufferUpdate.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;

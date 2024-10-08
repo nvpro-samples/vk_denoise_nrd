@@ -44,7 +44,7 @@ layout(set = 1, binding = eSceneDesc) readonly buffer SceneDesc_ { SceneDescript
 layout(set = 1, binding = eTextures)  uniform sampler2D texturesMap[]; // all textures
 
 layout(push_constant, scalar) uniform RtxPushConstant_  { RtxPushConstant pc; };
-  // clang-format on
+// clang-format on
 
 #include "nvvkhl/shaders/pbr_mat_struct.h"
 #include "nvvkhl/shaders/pbr_mat_eval.h"
@@ -55,7 +55,7 @@ layout(push_constant, scalar) uniform RtxPushConstant_  { RtxPushConstant pc; };
 void main()
 {
   // Retrieve the Primitive mesh buffer information
-  RenderPrimitive renderPrim  = RenderPrimitiveBuf(sceneDesc.renderPrimitiveAddress)._[gl_InstanceCustomIndexEXT];
+  RenderPrimitive renderPrim = RenderPrimitiveBuf(sceneDesc.renderPrimitiveAddress)._[gl_InstanceCustomIndexEXT];
 
   HitState hit = GetHitState(renderPrim);
 

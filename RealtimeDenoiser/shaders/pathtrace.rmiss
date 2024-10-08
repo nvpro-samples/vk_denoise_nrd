@@ -29,13 +29,6 @@
 #include "nvvkhl/shaders/func.h"
 #include "nvvkhl/shaders/dh_hdr.h"
 
-float powerHeuristic(float a, float b)
-{
-  const float t = a * a;
-  return t / (b * b + t);
-}
-
-
 // clang-format off
 layout(location = 0) rayPayloadInEXT HitPayload payload;
 layout(set = 1, binding = eFrameInfo) uniform FrameInfo_ { FrameInfo frameInfo; };
@@ -55,5 +48,5 @@ void main()
   // BSDF's PDF in ray direction and the envmap's PDF in ray direction into account.
   float mis_weight = powerHeuristic(payload.bsdfPDF, env.a);
   payload.contrib  = mis_weight * env.rgb * frameInfo.clearColor.xyz;
-  payload.hitT     = NRD_INF;  // Ending trace
+  payload.hitT     = -NRD_INF;  // Ending trace
 }

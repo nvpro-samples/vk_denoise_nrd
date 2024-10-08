@@ -133,8 +133,10 @@ vec3 DirectLight(PbrMaterial matEval, HitState hitState, vec3 toEye)
       traceRayEXT(topLevelAS, rayflag, 0xFF, SBTOFFSET_PATHTRACE, 0, MISSINDEX_PATHTRACE, hitState.pos, 0.001, lightDir,
                   lightDist, PAYLOAD_PATHTRACE);
       // If hitting nothing, add light contribution
-      if(payload.hitT == NRD_INF)
+      if(abs(payload.hitT) == NRD_INF)
+      {
         contribRadiance += radiance;
+      }
     }
   }
 #endif
@@ -197,7 +199,7 @@ void HdrContrib(in PbrMaterial pbrMat, in vec3 startPos, in vec3 toEye, out vec3
 
       // If ray to sky is not blocked, this is the environment light contribution
       // coming off the surface's location.
-      if(payload.hitT == NRD_INF)
+      if(abs(payload.hitT) == NRD_INF)
       {
         diffuseRadiance  = diffRadiance;
         specularRadiance = specRadiance;
@@ -474,10 +476,10 @@ void main()
         // If the ray hits the environment, NRD_INF is returned
         if(depth == 1)
         {
-          pathLength = payload.hitT;
+          pathLength = abs(payload.hitT);
         }
 
-        if(payload.hitT == NRD_INF)
+        if(payload.hitT < 0.0)
         {
           break;
         }
@@ -559,7 +561,7 @@ void main()
 
       for(int depth = 1; depth < pc.maxDepth; depth++)
       {
-        payload.hitT = NRD_INF;
+        payload.hitT = -NRD_INF;
         traceRayEXT(topLevelAS, rayFlags, 0xFF, SBTOFFSET_PATHTRACE, 0, MISSINDEX_PATHTRACE, payload.rayOrigin, 0.001,
                     payload.rayDirection, NRD_INF, PAYLOAD_PATHTRACE);
 
@@ -571,11 +573,11 @@ void main()
         // If the ray hits the environment, NRD_INF is returned
         if(depth == 1)
         {
-          pathLength = payload.hitT;
+          pathLength = abs(payload.hitT);
         }
 
         // Breaking on end ray
-        if(payload.hitT == NRD_INF)
+        if(payload.hitT < 0.0)
         {
           break;
         }

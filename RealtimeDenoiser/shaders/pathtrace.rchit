@@ -68,11 +68,6 @@ layout(push_constant, scalar) uniform RtxPushConstant_  { RtxPushConstant pc; };
 #include "nvvkhl/shaders/pbr_mat_eval.h"  // texturesMap
 #include "nvvkhl/shaders/hdr_env_sampling.h"
 
-void stopPath()
-{
-  payload.hitT = NRD_INF;
-}
-
 struct ShadingResult
 {
   vec3  weight;
@@ -96,7 +91,6 @@ vec3 sampleLights(in HitState state, inout uint seed, out vec3 dirToLight, out f
   dirToLight = rotate(dirToLight, vec3(0, 1, 0), frameInfo.envRotation);
   radiance *= frameInfo.clearColor.xyz;
 
-  // Return radiance over pdf
   return radiance / lightPdf;
 }
 
@@ -152,9 +146,10 @@ ShadingResult shading(in PbrMaterial pbrMat, in HitState hit)
       payload.hitT         = 0.0F;
       vec3 shadowRayOrigin = offsetRay(hit.pos, hit.geonrm);
 
-      traceRayEXT(topLevelAS, ray_flag, 0xFF, 0, 0, 0, shadowRayOrigin, 0.001, dirToLight, NRD_INF, 0);
+      traceRayEXT(topLevelAS, ray_flag, 0xFF, SBTOFFSET_PATHTRACE, 0, MISSINDEX_PATHTRACE, shadowRayOrigin, 0.001,
+                  dirToLight, NRD_INF, PAYLOAD_PATHTRACE);
       // If hitting nothing, add light contribution
-      if(payload.hitT == NRD_INF)
+      if(abs(payload.hitT) == NRD_INF)
       {
         result.contrib += contribution;
       }
@@ -172,7 +167,8 @@ ShadingResult shading(in PbrMaterial pbrMat, in HitState hit)
 
     if(sampleData.event_type == BSDF_EVENT_ABSORB)
     {
-      stopPath();
+      // stop path, yet return the hit distance
+      payload.hitT = -payload.hitT;
     }
     else
     {

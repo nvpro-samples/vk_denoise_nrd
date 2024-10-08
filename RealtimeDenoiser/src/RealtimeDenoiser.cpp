@@ -46,7 +46,6 @@
 #include "nvvk/gizmos_vk.hpp"
 #include "nvvk/raypicker_vk.hpp"
 #include "nvvk/sbtwrapper_vk.hpp"
-#include "nvvk/structs_vk.hpp"
 #include "nvvkhl/alloc_vma.hpp"
 #include "nvvkhl/application.hpp"
 #include "nvvkhl/element_camera.hpp"
@@ -377,7 +376,7 @@ public:
 
         auto showBuffer = [&](const char* name, GbufferNames buffer) {
           ImGui::Text("%s", name);
-          if(ImGui::ImageButton(m_gBuffers->getDescriptorSet(buffer), tumbnailSize))
+          if(ImGui::ImageButton(name, m_gBuffers->getDescriptorSet(buffer), tumbnailSize))
             m_showBuffer = buffer;
         };
 
@@ -1130,7 +1129,7 @@ private:
                               VK_SHADER_STAGE_COMPUTE_BIT});
     layoutBindings.push_back({uint32_t(CompositionBindings::eCompImage), VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT});
 
-    VkDescriptorSetLayoutCreateInfo layoutInfo(nvvk::make<VkDescriptorSetLayoutCreateInfo>());
+    VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, nullptr};
 
     layoutInfo.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
     layoutInfo.bindingCount = layoutBindings.size();
@@ -1141,7 +1140,7 @@ private:
 
     VkPushConstantRange push_constant{VK_SHADER_STAGE_ALL, 0, sizeof(RtxPushConstant)};
 
-    VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo(nvvk::make<VkPipelineLayoutCreateInfo>());
+    VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, nullptr};
     pipelineLayoutCreateInfo.setLayoutCount = 1;
     pipelineLayoutCreateInfo.pSetLayouts    = &m_compositionDescSetlayout;
 
@@ -1150,19 +1149,19 @@ private:
 
     NVVK_CHECK(vkCreatePipelineLayout(m_device, &pipelineLayoutCreateInfo, nullptr, &m_compositionLayout));
 
-    VkShaderModuleCreateInfo shaderInfo(nvvk::make<VkShaderModuleCreateInfo>());
+    VkShaderModuleCreateInfo shaderInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr};
     shaderInfo.codeSize = sizeof(compositing_comp);
     shaderInfo.pCode    = compositing_comp;
 
     VkShaderModule assembleShader = VK_NULL_HANDLE;
     NVVK_CHECK(vkCreateShaderModule(m_device, &shaderInfo, nullptr, &assembleShader));
 
-    VkPipelineShaderStageCreateInfo stageCreateInfo(nvvk::make<VkPipelineShaderStageCreateInfo>());
+    VkPipelineShaderStageCreateInfo stageCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr};
     stageCreateInfo.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
     stageCreateInfo.module = assembleShader;
     stageCreateInfo.pName  = "main";
 
-    VkComputePipelineCreateInfo pipelineInfo(nvvk::make<VkComputePipelineCreateInfo>());
+    VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, nullptr};
     pipelineInfo.layout = m_compositionLayout;
     pipelineInfo.stage  = stageCreateInfo;
 
@@ -1179,7 +1178,7 @@ private:
     std::vector<VkDescriptorSetLayoutBinding> layoutBindings;
     layoutBindings.push_back({uint32_t(TaaBindings::eInImage), VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT});
     layoutBindings.push_back({uint32_t(TaaBindings::eOutImage), VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT});
-    VkDescriptorSetLayoutCreateInfo layoutInfo(nvvk::make<VkDescriptorSetLayoutCreateInfo>());
+    VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
 
     layoutInfo.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
     layoutInfo.bindingCount = layoutBindings.size();
@@ -1190,7 +1189,7 @@ private:
 
     VkPushConstantRange push_constant{VK_SHADER_STAGE_ALL, 0, sizeof(float)};
 
-    VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo(nvvk::make<VkPipelineLayoutCreateInfo>());
+    VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, nullptr};
     pipelineLayoutCreateInfo.setLayoutCount = 1;
     pipelineLayoutCreateInfo.pSetLayouts    = &m_taaDescSetlayout;
 
@@ -1199,19 +1198,19 @@ private:
 
     NVVK_CHECK(vkCreatePipelineLayout(m_device, &pipelineLayoutCreateInfo, nullptr, &m_taaLayout));
 
-    VkShaderModuleCreateInfo shaderInfo(nvvk::make<VkShaderModuleCreateInfo>());
+    VkShaderModuleCreateInfo shaderInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr};
     shaderInfo.codeSize = sizeof(taa_comp);
     shaderInfo.pCode    = taa_comp;
 
     VkShaderModule assembleShader = VK_NULL_HANDLE;
     NVVK_CHECK(vkCreateShaderModule(m_device, &shaderInfo, nullptr, &assembleShader));
 
-    VkPipelineShaderStageCreateInfo stageCreateInfo(nvvk::make<VkPipelineShaderStageCreateInfo>());
+    VkPipelineShaderStageCreateInfo stageCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr};
     stageCreateInfo.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
     stageCreateInfo.module = assembleShader;
     stageCreateInfo.pName  = "main";
 
-    VkComputePipelineCreateInfo pipelineInfo(nvvk::make<VkComputePipelineCreateInfo>());
+    VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, nullptr};
     pipelineInfo.layout = m_taaLayout;
     pipelineInfo.stage  = stageCreateInfo;
 
@@ -1230,7 +1229,7 @@ private:
 
     VkDescriptorImageInfo outImageInfo = {VK_NULL_HANDLE, outImage, VK_IMAGE_LAYOUT_GENERAL};
     {
-      VkWriteDescriptorSet descriptorWrite(nvvk::make<VkWriteDescriptorSet>());
+      VkWriteDescriptorSet descriptorWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr};
       descriptorWrite.descriptorCount = 1;
       descriptorWrite.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
       descriptorWrite.dstBinding      = uint32_t(CompositionBindings::eCompImage);
@@ -1241,7 +1240,7 @@ private:
 
     VkDescriptorBufferInfo bufferInfo = {m_bFrameInfo.buffer, 0, VK_WHOLE_SIZE};
     {
-      VkWriteDescriptorSet descriptorWrite(nvvk::make<VkWriteDescriptorSet>());
+      VkWriteDescriptorSet descriptorWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr};
       descriptorWrite.descriptorCount = 1;
       descriptorWrite.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
       descriptorWrite.dstBinding      = uint32_t(CompositionBindings::eInFrameInfo);
@@ -1251,7 +1250,7 @@ private:
     }
 
     auto bindImage = [&](CompositionBindings binding, GbufferNames gbufImage) {
-      VkWriteDescriptorSet descriptorWrite(nvvk::make<VkWriteDescriptorSet>());
+      VkWriteDescriptorSet descriptorWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr};
       descriptorWrite.descriptorCount = 1;
       descriptorWrite.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
       descriptorWrite.dstBinding      = uint32_t(binding);
@@ -1282,7 +1281,7 @@ private:
     std::vector<VkWriteDescriptorSet> writes;
 
     auto bindImage = [&](TaaBindings binding, GbufferNames gbufImage) {
-      VkWriteDescriptorSet descriptorWrite(nvvk::make<VkWriteDescriptorSet>());
+      VkWriteDescriptorSet descriptorWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr};
       descriptorWrite.descriptorCount = 1;
       descriptorWrite.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
       descriptorWrite.dstBinding      = uint32_t(binding);
