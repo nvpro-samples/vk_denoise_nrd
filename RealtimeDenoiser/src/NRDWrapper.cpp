@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -556,7 +556,8 @@ void NRDWrapper::dispatch(VkCommandBuffer commandBuffer, const nrd::DispatchDesc
 
   NRDPipeline& pipeline = m_pipelines[dispatchDesc.pipelineIndex];
 
-  std::vector<VkWriteDescriptorSet> descriptorUpdates(pipeline.numBindings + iDesc.samplersNum, VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr});
+  std::vector<VkWriteDescriptorSet>  descriptorUpdates(pipeline.numBindings + iDesc.samplersNum,
+                                                       VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr});
   std::vector<VkDescriptorImageInfo> descriptorImageInfos(pipeline.numBindings + iDesc.samplersNum);
 
   std::vector<VkImageMemoryBarrier> imageBarriers;

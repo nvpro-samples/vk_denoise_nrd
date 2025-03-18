@@ -192,7 +192,7 @@ void main()
   RenderNode      renderNode = RenderNodeBuf(sceneDesc.renderNodeAddress)._[gl_InstanceID];
   RenderPrimitive renderPrim = RenderPrimitiveBuf(sceneDesc.renderPrimitiveAddress)._[gl_InstanceCustomIndexEXT];
 
-  HitState hit = GetHitState(renderPrim);
+  HitState hit = GetHitState(renderPrim, pc.bitangentFlip);
 
   // Scene materials
   uint      matIndex  = max(0, renderNode.materialID);  // material of primitive mesh

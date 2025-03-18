@@ -19,11 +19,12 @@
 #pragma once
 #include "imgui/imgui_helper.h"
 #include <NRD.h>
+#include <NRDSettings.h>
 
 namespace Nrd_ui {
 static void render(nrd::ReblurSettings& reblurSettings, nrd::RelaxSettings& relaxSettings)
 {
-  namespace PE = ImGuiH::PropertyEditor ;
+  namespace PE = ImGuiH::PropertyEditor;
   if(PE::treeNode("ReBlUR"))
   {
     PE::entry(
@@ -84,9 +85,11 @@ static void render(nrd::ReblurSettings& reblurSettings, nrd::RelaxSettings& rela
         "if roughness < this, temporal accumulation becomes responsive and driven by roughness (useful for animated water)");
 
     PE::entry(
-        "Stabilization Strength",
-        [&]() { return ImGui::SliderFloat("#Relax Radius", (float*)&reblurSettings.stabilizationStrength, 0.0f, 1.0f); },
-        "stabilizes output, more stabilization improves antilag (clean signals can use lower values)");
+        "Max # of Stabilization Frames",
+        [&]() {
+          return ImGui::SliderInt("#Relax Radius", (int*)&reblurSettings.maxStabilizedFrameNum, 0.0, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
+        },
+        "maximum number of linearly accumulated frames for stabilized radiance \"0\" disables the stabilization pass");
 
     PE::entry(
         "Plane Distance Sensitivity",
@@ -104,21 +107,6 @@ static void render(nrd::ReblurSettings& reblurSettings, nrd::RelaxSettings& rela
         "Enable Performance Mode",
         [&]() { return ImGui::Checkbox("##Enable Performance Mode", &reblurSettings.enablePerformanceMode); },
         "Boosts performance by sacrificing IQ");
-
-    PE::entry(
-        "Enable Material Test For Diffuse",
-        [&]() {
-          return ImGui::Checkbox("##Enable Material Test For Diffuse", &reblurSettings.enableMaterialTestForDiffuse);
-        },
-        "Spatial passes do optional material index comparison as: ( materialEnabled ? material[ center ] == material[ sample ] : 1 )");
-
-    PE::entry(
-        "Enable Material Test For Specular",
-        [&]() {
-          return ImGui::Checkbox("##Enable Material Test For Specular", &reblurSettings.enableMaterialTestForSpecular);
-        },
-        "Spatial passes do optional material index comparison as: ( materialEnabled ? material[ center ] == material[ sample ] : 1 )");
-
 
     PE::entry(
         "Use Prepass Only For Specular Motion Estimation",
@@ -229,17 +217,8 @@ specular pre-pass for tracking purposes only)");
 
 
     PE::entry(
-        "Diffuse Lobe Angle Fraction",
-        [&]() {
-          return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.diffuseLobeAngleFraction, 0.0f, 1.0f);
-        },
-        "base fraction of diffuse or specular lobe angle used to drive normal based rejection");
-
-    PE::entry(
-        "Specular Lobe Angle Fraction",
-        [&]() {
-          return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.specularLobeAngleFraction, 0.0f, 1.0f);
-        },
+        "Lobe Angle Fraction",
+        [&]() { return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.lobeAngleFraction, 0.0f, 1.0f); },
         "base fraction of diffuse or specular lobe angle used to drive normal based rejection");
 
     PE::entry(
@@ -351,12 +330,6 @@ specular pre-pass for tracking purposes only)");
               [&]() { return ImGui::Checkbox("##Enable Anti-Firefly", &relaxSettings.enableAntiFirefly); });
     PE::entry("Enable Roughness Edge Stopping", [&]() {
       return ImGui::Checkbox("##Enable Roughness Edge Stopping", &relaxSettings.enableRoughnessEdgeStopping);
-    });
-    PE::entry("Enable Material Test For Diffuse", [&]() {
-      return ImGui::Checkbox("##Enable Material Test For Diffuse", &relaxSettings.enableMaterialTestForDiffuse);
-    });
-    PE::entry("Enable Material Test For Specular", [&]() {
-      return ImGui::Checkbox("##Enable Material Test For Specular", &relaxSettings.enableMaterialTestForSpecular);
     });
 
     PE::treePop();

@@ -135,6 +135,7 @@ struct RtxPushConstant
   float meterToUnitsMultiplier;
   float overrideRoughness;
   float overrideMetallic;
+  float bitangentFlip;
   ivec2 mouseCoord;
 };
 

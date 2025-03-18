@@ -57,7 +57,7 @@ void main()
   // Retrieve the Primitive mesh buffer information
   RenderPrimitive renderPrim = RenderPrimitiveBuf(sceneDesc.renderPrimitiveAddress)._[gl_InstanceCustomIndexEXT];
 
-  HitState hit = GetHitState(renderPrim);
+  HitState hit = GetHitState(renderPrim, pc.bitangentFlip);
 
   payloadNrd.renderNodeIndex       = gl_InstanceID;
   payloadNrd.renderPrimIndex       = gl_InstanceCustomIndexEXT;

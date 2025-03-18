@@ -57,7 +57,86 @@ vec3 adjustShadingNormalToRayDir(inout vec3 N, inout vec3 G)
 
 //-----------------------------------------------------------------------
 //-----------------------------------------------------------------------
-HitState GetHitState(RenderPrimitive renderPrim)
+mat3x2 getTexCoords0(in RenderPrimitive renderPrim, in uvec3 idx)
+{
+  if(!hasVertexTexCoord0(renderPrim))
+    return mat3x2(0);
+
+  VertexTexCoord0 texcoords = VertexTexCoord0(renderPrim.vertexBuffer.texCoord0Address);
+  mat3x2            uv;
+  uv[0] = texcoords._[idx.x];
+  uv[1] = texcoords._[idx.y];
+  uv[2] = texcoords._[idx.z];
+  return uv;
+}
+
+vec2 getInterpolatedVertexTexCoords(in RenderPrimitive renderPrim, in uvec3 idx, in vec3 barycentrics)
+{
+  if(!hasVertexTexCoord0(renderPrim))
+    return vec2(0, 0);
+
+  mat3x2 uv = getTexCoords0(renderPrim, idx);
+
+  return uv[0] * barycentrics.x + uv[1] * barycentrics.y + uv[2] * barycentrics.z;
+}
+
+
+void computeTangentSpace(in RenderPrimitive renderPrim, in uvec3 idx, inout HitState hit)
+{
+  mat3x2 uv = getTexCoords0(renderPrim, idx);
+
+  vec2 u = uv[1] - uv[0];
+  vec2 v = uv[2] - uv[0];
+
+  float d = u.x * v.y - u.y * v.x;
+  if (d == 0.0f)
+  {
+    vec4 t = makeFastTangent(hit.nrm);
+    hit.tangent = t.xyz;
+    hit.bitangent = cross(hit.nrm, hit.tangent) * t.w;
+    hit.bitangentSign = t.w;
+  }
+  else
+  {
+    u /= d;
+    v /= d;
+
+    vec3 v0 = getVertexPosition(renderPrim, idx.x);
+    vec3 v1 = getVertexPosition(renderPrim, idx.y);
+    vec3 v2 = getVertexPosition(renderPrim, idx.z);
+
+    vec3 p = v1 - v0;
+    vec3 q = v2 - v0;
+
+    vec3 t;
+    t.x = v.y * p.x - u.y * q.x;
+    t.y = v.y * p.y - u.y * q.y;
+    t.z = v.y * p.z - u.y * q.z;
+
+    t = vec3(t * gl_WorldToObjectEXT);
+
+    vec3 b;
+    b.x = u.x * q.x - v.x * p.x;
+    b.y = u.x * q.y - v.x * p.y;
+    b.z = u.x * q.z - v.x * p.z;
+
+    b = vec3(b * gl_WorldToObjectEXT);
+
+    // orthogonalize T and B to N
+    t = t - hit.nrm * dot(t, hit.nrm);
+    b = b - hit.nrm * dot(b, hit.nrm);
+
+    hit.tangent = normalize(t);
+    hit.bitangent = normalize(b);
+
+    hit.bitangentSign = dot(cross(hit.nrm, hit.tangent), hit.bitangent) > 0 ? -1.0 : 1.0;
+  }
+}
+
+
+//-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
+HitState GetHitState(RenderPrimitive renderPrim, in float bitangentFlip)
 {
   HitState hit;
 
@@ -92,31 +171,30 @@ HitState GetHitState(RenderPrimitive renderPrim)
   hit.uv = getInterpolatedVertexTexCoord0(renderPrim, triangleIndex, barycentrics);
 
   // Tangent - Bitangent
-  vec4 tng[3];
   if(hasVertexTangent(renderPrim))
   {
+    vec4 tng[3];
     tng[0] = getVertexTangent(renderPrim, triangleIndex.x);
     tng[1] = getVertexTangent(renderPrim, triangleIndex.y);
     tng[2] = getVertexTangent(renderPrim, triangleIndex.z);
-  }
-  else
-  {
-    vec4 t = makeFastTangent(hit.nrm);
-    tng[0] = t;
-    tng[1] = t;
-    tng[2] = t;
-  }
 
-  {
-    hit.tangent   = normalize(mixBary(tng[0].xyz, tng[1].xyz, tng[2].xyz, barycentrics));
-    hit.tangent   = vec3(gl_ObjectToWorldEXT * vec4(hit.tangent, 0.0));
-    hit.tangent   = normalize(hit.tangent - hit.nrm * dot(hit.nrm, hit.tangent));
+    hit.tangent   = normalize(mixBary(tng[0].xyz, tng[1].xyz, tng[2].xyz, barycentrics)); // interpolate tangent
+    hit.tangent   = vec3(hit.tangent * gl_WorldToObjectEXT); // transform to worldspace
+    hit.tangent   = normalize(hit.tangent - hit.nrm * dot(hit.nrm, hit.tangent)); // orthogonalize to N and normalize
     hit.bitangent = cross(hit.nrm, hit.tangent) * tng[0].w;
     hit.bitangentSign = tng[0].w;
   }
+  else
+  {
+    computeTangentSpace(renderPrim, triangleIndex, hit);
+  }
+
+  hit.bitangentSign *= bitangentFlip;
+  hit.bitangent *= bitangentFlip;
 
   return hit;
 }
+
 
 
 #endif

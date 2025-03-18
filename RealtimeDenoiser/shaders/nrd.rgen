@@ -224,8 +224,8 @@ void buildHitInfo(in HitPayloadNrd payload, in vec3 rayOrigin, in vec3 rayDirect
   hitState.geonrm        = hitState.nrm;
   hitState.uv            = payload.uv;
   hitState.tangent       = payload.tangent.xyz;
-  hitState.bitangent     = cross(hitState.nrm, hitState.tangent);
-  hitState.bitangentSign = payload.bitangentSign;
+  hitState.bitangent     = cross(hitState.nrm, hitState.tangent) * payload.bitangentSign;
+
 
   // Scene materials
   uint      matIndex  = max(0, renderNode.materialID);  // material of primitive mesh

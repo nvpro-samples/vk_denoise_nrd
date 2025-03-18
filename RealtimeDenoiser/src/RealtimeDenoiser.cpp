@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2024 NVIDIA CORPORATION
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -313,7 +313,10 @@ public:
 
           PropertyEditor::treePop();
         }
-        PropertyEditor::entry("Show Axis", [&] { return ImGui::Checkbox("##4", &m_settings.showAxis); });
+        bool flipBitangent = m_pushConst.bitangentFlip < 0 ? true : false;
+        PropertyEditor::entry("Flip Bitangent", [&] { return ImGui::Checkbox("##5", &flipBitangent); });
+        m_pushConst.bitangentFlip = flipBitangent ? -1.0 : 1.0;
+
         PropertyEditor::end();
       }
 
@@ -435,8 +438,6 @@ public:
     {
       return;
     }
-
-    updateFrame();
 
     auto scope_dbg = m_dutil->DBG_SCOPE(cmd);
 
@@ -677,8 +678,7 @@ private:
     auto* cmd = m_app->createTempCmdBuffer();
 
     // Create the buffer of the current frame, changing at each frame
-    m_bFrameInfo = m_alloc->createBuffer(sizeof(FrameInfo), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    m_bFrameInfo = m_alloc->createBuffer(sizeof(FrameInfo), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
     m_dutil->DBG_NAME(m_bFrameInfo.buffer);
 
     m_app->submitAndWaitTempCmdBuffer(cmd);
@@ -800,7 +800,8 @@ private:
     group.type          = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
     group.generalShader = eRaygen;
     shaderGroups.push_back(group);
-    group.generalShader = eNrdRaygen;  // #NRD
+    // #NRD Raygen
+    group.generalShader = eNrdRaygen;
     shaderGroups.push_back(group);
 
     // Miss
@@ -919,25 +920,6 @@ private:
     writes.emplace_back(d->makeWriteArray(0, SceneBindings::eTextures, diit.data()));
 
     vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-  }
-
-  //--------------------------------------------------------------------------------------------------
-  // If the camera matrix has changed, resets the frame.
-  // otherwise, increments frame.
-  //
-  void updateFrame()
-  {
-    static glm::mat4 ref_cam_matrix;
-    static float     ref_fov{CameraManip.getFov()};
-
-    const auto& m   = CameraManip.getMatrix();
-    const auto  fov = CameraManip.getFov();
-
-    if(ref_cam_matrix != m || ref_fov != fov)
-    {
-      ref_cam_matrix = m;
-      ref_fov        = fov;
-    }
   }
 
   //--------------------------------------------------------------------------------------------------
@@ -1149,12 +1131,7 @@ private:
 
     NVVK_CHECK(vkCreatePipelineLayout(m_device, &pipelineLayoutCreateInfo, nullptr, &m_compositionLayout));
 
-    VkShaderModuleCreateInfo shaderInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr};
-    shaderInfo.codeSize = sizeof(compositing_comp);
-    shaderInfo.pCode    = compositing_comp;
-
-    VkShaderModule assembleShader = VK_NULL_HANDLE;
-    NVVK_CHECK(vkCreateShaderModule(m_device, &shaderInfo, nullptr, &assembleShader));
+    VkShaderModule assembleShader = nvvk::createShaderModule(m_device, compositing_comp, sizeof(compositing_comp));
 
     VkPipelineShaderStageCreateInfo stageCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr};
     stageCreateInfo.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -1198,12 +1175,7 @@ private:
 
     NVVK_CHECK(vkCreatePipelineLayout(m_device, &pipelineLayoutCreateInfo, nullptr, &m_taaLayout));
 
-    VkShaderModuleCreateInfo shaderInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr};
-    shaderInfo.codeSize = sizeof(taa_comp);
-    shaderInfo.pCode    = taa_comp;
-
-    VkShaderModule assembleShader = VK_NULL_HANDLE;
-    NVVK_CHECK(vkCreateShaderModule(m_device, &shaderInfo, nullptr, &assembleShader));
+    VkShaderModule assembleShader = nvvk::createShaderModule(m_device, taa_comp, sizeof(taa_comp));
 
     VkPipelineShaderStageCreateInfo stageCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr};
     stageCreateInfo.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -1307,9 +1279,9 @@ private:
   //--------------------------------------------------------------------------------------------------
   //
   //
-  nvvkhl::Application*              m_app{nullptr};
-  std::unique_ptr<nvvk::DebugUtil>  m_dutil;
-  std::unique_ptr<nvvkhl::AllocVma> m_alloc;
+  nvvkhl::Application*                     m_app{nullptr};
+  std::unique_ptr<nvvk::DebugUtil>         m_dutil;
+  std::unique_ptr<nvvk::ResourceAllocator> m_alloc;
 
   glm::vec2                                     m_viewSize = {1, 1};
   VkDevice                                      m_device   = VK_NULL_HANDLE;
@@ -1330,6 +1302,8 @@ private:
       1.0,         // meterToUnitsMultiplier
       -1.0,        // overrideRoughness
       -1.0,        // overrideMetallic
+      1.0,         // bitangentFlip
+      {0, 0}       // mouseVec
   };  // Information sent to the shader
   nvvkhl::PipelineContainer m_rtxPipe;
   int                       m_frame{0};
@@ -1394,6 +1368,20 @@ auto main(int /*argc*/, char** /*argv*/) -> int
   ctxInfo.deviceExtensions.emplace_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
   ctxInfo.instanceExtensions.emplace_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
   nvvkhl::addSurfaceExtensions(ctxInfo.instanceExtensions);
+
+#ifndef NDEBUG
+  static VkPhysicalDeviceRayTracingValidationFeaturesNV validationFeatures = {
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_VALIDATION_FEATURES_NV};
+  ctxInfo.addDeviceExtension(VK_NV_RAY_TRACING_VALIDATION_EXTENSION_NAME, true, &validationFeatures,
+                             VK_NV_RAY_TRACING_VALIDATION_SPEC_VERSION);
+
+  ctxInfo.addDeviceExtension(VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME, true);
+
+  VkPhysicalDeviceShaderRelaxedExtendedInstructionFeaturesKHR shaderRelaxedExtInstFeatures{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_RELAXED_EXTENDED_INSTRUCTION_FEATURES_KHR};
+  ctxInfo.addDeviceExtension(VK_KHR_SHADER_RELAXED_EXTENDED_INSTRUCTION_EXTENSION_NAME, true, &shaderRelaxedExtInstFeatures);
+
+#endif
 
   g_dbgPrintf                   = std::make_shared<nvvkhl::ElementDbgPrintf>();
   ctxInfo.instanceCreateInfoExt = g_dbgPrintf->getFeatures();

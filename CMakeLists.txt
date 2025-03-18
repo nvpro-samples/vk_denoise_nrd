@@ -47,7 +47,8 @@ include(FetchContent)
 # CMake will automatically look for CMakeLists.txt in there
 FetchContent_Declare(
     NRDSDK
-    GIT_REPOSITORY https://github.com/NVIDIAGameWorks/RayTracingDenoiser.git
+    GIT_REPOSITORY https://github.com/NVIDIA-RTX/NRD.git
+    GIT_TAG 7481ed7  # v4.14.0
     GIT_SHALLOW
     GIT_SUBMODULES
     SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/externals/nrd
@@ -56,8 +57,10 @@ FetchContent_Declare(
 # Configure the NRD build to only produce SPIR-V binaries and embed them into the NRD library
 option (NRD_EMBEDS_DXIL_SHADERS "NRD embeds DXIL shaders" OFF)
 option (NRD_EMBEDS_DXBC_SHADERS "NRD embeds DXBC shaders" OFF)
+option (NRD_STATIC_LIBRARY "NRD linked as static library into executable" )
 set(NRD_EMBEDS_DXIL_SHADERS OFF)
 set(NRD_EMBEDS_DXBC_SHADERS OFF)
+set(NRD_STATIC_LIBRARY ON)
 
 # Cause CMake to download and/or update our local copy of NRDSDK.
 FetchContent_MakeAvailable(NRDSDK)
