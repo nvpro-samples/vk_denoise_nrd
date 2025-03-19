@@ -48,7 +48,7 @@ include(FetchContent)
 FetchContent_Declare(
     NRDSDK
     GIT_REPOSITORY https://github.com/NVIDIA-RTX/NRD.git
-    GIT_TAG 7481ed7  # v4.14.0
+    GIT_TAG d070d3b # v4.14.2
     GIT_SHALLOW
     GIT_SUBMODULES
     SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/externals/nrd
