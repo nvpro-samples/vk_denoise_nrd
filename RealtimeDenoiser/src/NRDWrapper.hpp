@@ -81,10 +81,10 @@ public:
 private:
   struct NRDPipeline
   {
-    VkPipeline                         pipeline       = VK_NULL_HANDLE;
-    VkPipelineLayout                   pipelineLayout = VK_NULL_HANDLE;
-    std::vector<VkDescriptorSetLayout> descriptorLayouts;
-    uint32_t                           numBindings = 0;
+    VkPipeline            pipeline                = VK_NULL_HANDLE;
+    VkPipelineLayout      pipelineLayout          = VK_NULL_HANDLE;
+    VkDescriptorSetLayout generalDescriptorLayout = VK_NULL_HANDLE;
+    uint32_t              numBindings             = 0;
   };
 
   NRDWrapper(const NRDWrapper&)           = delete;
@@ -107,12 +107,11 @@ private:
   nvvk::Buffer                                                  m_constantBuffer;
 
   std::vector<NRDPipeline> m_pipelines;
-
-  /* In theory NRD can place each type of descriptor (constant buffer, samplers, resources(textures))
-   * into its own descriptor set. In practice, they mostly end up in the same set, but each type of
-   * descriptors is put into a specific range of binding indexes (separated by ~100 indexes)
-   */
-  uint32_t m_constantBufferSetIndex = 0;
-  uint32_t m_samplersSetIndex       = 0;
-  uint32_t m_resourcesSetIndex      = 0;
+  // Vulkan doesn't let us create a pipeline layout with two sets that use
+  // push descriptors. So if NRD places immutable samplers in a different
+  // set, then we store its set (which does not require updates) here.
+  // We use a single one that will be shared among all pipelines.
+  VkDescriptorSetLayout m_samplerDescriptorLayout;
+  VkDescriptorPool      m_samplerDescriptorPool;
+  VkDescriptorSet       m_samplerDescriptorSet;
 };

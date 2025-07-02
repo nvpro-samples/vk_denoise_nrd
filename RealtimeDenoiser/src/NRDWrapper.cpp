@@ -259,14 +259,16 @@ NRDWrapper::~NRDWrapper()
   {
     m_resAlloc.destroy(t);
   }
+  if(m_samplerDescriptorLayout)  // If samplers were in a different set
+  {
+    vkDestroyDescriptorSetLayout(m_device, m_samplerDescriptorLayout, nullptr);
+    vkDestroyDescriptorPool(m_device, m_samplerDescriptorPool, nullptr);
+  }
   for(auto& p : m_pipelines)
   {
     vkDestroyPipeline(m_device, p.pipeline, nullptr);
     vkDestroyPipelineLayout(m_device, p.pipelineLayout, nullptr);
-    for(auto& l : p.descriptorLayouts)
-    {
-      vkDestroyDescriptorSetLayout(m_device, l, nullptr);
-    }
+    vkDestroyDescriptorSetLayout(m_device, p.generalDescriptorLayout, nullptr);
   }
 
   nrd::DestroyInstance(*m_instance);
@@ -346,26 +348,47 @@ nvvk::Texture NRDWrapper::createTexture(const nrd::TextureDesc& tDesc, uint16_t 
 // created from NRD's descriptions.
 void NRDWrapper::createPipelines()
 {
-  nrd::InstanceDesc iDesc = nrd::GetInstanceDesc(*m_instance);
-  nrd::LibraryDesc  lDesc = nrd::GetLibraryDesc();
+  const nrd::InstanceDesc iDesc = nrd::GetInstanceDesc(*m_instance);
+  const nrd::LibraryDesc  lDesc = nrd::GetLibraryDesc();
 
   // These are the base binding indices for each type of binding
-  uint32_t constantBufferBindingOffset   = lDesc.spirvBindingOffsets.constantBufferOffset;
-  uint32_t samplersBindingOffset         = lDesc.spirvBindingOffsets.samplerOffset;
-  uint32_t resourcesBindingOffset        = lDesc.spirvBindingOffsets.textureOffset;
-  uint32_t storageTextureAndBufferOffset = lDesc.spirvBindingOffsets.storageTextureAndBufferOffset;
+  const uint32_t constantBufferBindingOffset   = lDesc.spirvBindingOffsets.constantBufferOffset;
+  const uint32_t samplersBindingOffset         = lDesc.spirvBindingOffsets.samplerOffset;
+  const uint32_t texturesBindingOffset         = lDesc.spirvBindingOffsets.textureOffset;
+  const uint32_t storageTextureAndBufferOffset = lDesc.spirvBindingOffsets.storageTextureAndBufferOffset;
 
-  // Determine the number of unique sets ("register spaces")
-  // The indices here store which type of resource goes into which set.
-  // NRD can make it so that each type goes into its own set or sets are shared among resource types.
-  m_constantBufferSetIndex = 0;
-  m_samplersSetIndex       = (iDesc.constantBufferSpaceIndex == iDesc.samplersSpaceIndex) ? m_constantBufferSetIndex :
-                                                                                            m_constantBufferSetIndex + 1;
-  m_resourcesSetIndex =
-      (iDesc.resourcesSpaceIndex == iDesc.constantBufferSpaceIndex) ?
-          0 :
-          ((iDesc.resourcesSpaceIndex == iDesc.samplersSpaceIndex) ? m_samplersSetIndex : m_samplersSetIndex + 1);
-  uint32_t numPipelineSets = std::max(m_samplersSetIndex, m_resourcesSetIndex) + 1;
+  // If samplers are in a separate descriptor set, create a descriptor set for
+  // them now.
+  // If NRD placed samplers in a separate descriptor set, create it now.
+  if(iDesc.samplersInSeparateSet)
+  {
+    // Prepare sampler descriptors
+    std::vector<VkDescriptorSetLayoutBinding> setBindings(iDesc.samplersNum);
+    for(uint32_t s = 0; s < iDesc.samplersNum; ++s)
+    {
+      setBindings[s] = VkDescriptorSetLayoutBinding{.binding         = samplersBindingOffset + s,
+                                                    .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER,
+                                                    .descriptorCount = 1,
+                                                    .stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT,
+                                                    // We make use of immutable samplers as they will be shared among all the pipelines and
+                                                    // don't change over the lifetime of the pipelines
+                                                    .pImmutableSamplers = &m_samplers[s]};
+    }
+    const VkDescriptorSetLayoutCreateInfo samplerLayoutInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                                            .bindingCount = iDesc.samplersNum,
+                                                            .pBindings    = setBindings.data()};
+    NVVK_CHECK(vkCreateDescriptorSetLayout(m_device, &samplerLayoutInfo, nullptr, &m_samplerDescriptorLayout));
+
+    const VkDescriptorPoolSize immutableSamplerSize{.type = VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = iDesc.samplersNum};
+    const VkDescriptorPoolCreateInfo poolInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &immutableSamplerSize};
+    NVVK_CHECK(vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &m_samplerDescriptorPool));
+    const VkDescriptorSetAllocateInfo descriptorSetInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                                        .descriptorPool     = m_samplerDescriptorPool,
+                                                        .descriptorSetCount = 1,
+                                                        .pSetLayouts        = &m_samplerDescriptorLayout};
+    NVVK_CHECK(vkAllocateDescriptorSets(m_device, &descriptorSetInfo, &m_samplerDescriptorSet));
+  }
 
   // Determine the maximum number of bindings a pipeline can have
   uint32_t maxNumtextureBindings = 0;
@@ -389,133 +412,100 @@ void NRDWrapper::createPipelines()
 
     const nrd::PipelineDesc& pDesc = iDesc.pipelines[p];
 
-    std::vector<VkDescriptorSetLayoutCreateInfo> descriptorSetLayoutInfos(
-        numPipelineSets, VkDescriptorSetLayoutCreateInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, nullptr});
-    // We make use of push descriptors which makes it so much easier to use and update.
-    for(auto& layout : descriptorSetLayoutInfos)
-    {
-      layout.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
-    }
     // Just reserve maximum number of bindings - we may not make use of them all for each pipeline
     // 1 constant buffer
-    // n samplers
     // m textures
-    std::vector<std::vector<VkDescriptorSetLayoutBinding>> setBindings(
-        numPipelineSets, std::vector<VkDescriptorSetLayoutBinding>(1 + iDesc.samplersNum + maxNumtextureBindings));
+    // n samplers
+    std::vector<VkDescriptorSetLayoutBinding> setBindings(1 + maxNumtextureBindings
+                                                          + (iDesc.samplersInSeparateSet ? 0 : iDesc.samplersNum));
+    // On the main descriptor set, we make use of push descriptors which makes it so much easier to use and update.
+    // But we can't use push descriptors for both; see VUID-VkPipelineLayoutCreateInfo-pSetLayouts-00293
+    VkDescriptorSetLayoutCreateInfo setLayoutInfo{.sType     = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                                  .flags     = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR,
+                                                  .pBindings = setBindings.data()};
 
-    // Prepare sampler descriptors
+    if(!iDesc.samplersInSeparateSet)
     {
-      VkDescriptorSetLayoutCreateInfo& samplerBindingSetInfo = descriptorSetLayoutInfos[m_constantBufferSetIndex];
-      if(!samplerBindingSetInfo.pBindings)
-      {
-        // This path will only be hit when the samplers are in their own set and we just start putting sampler descriptors in there
-        samplerBindingSetInfo.pBindings = setBindings[m_constantBufferSetIndex].data();
-      }
-
+      // Prepare sampler descriptors
       for(uint32_t s = 0; s < iDesc.samplersNum; ++s)
       {
-        VkDescriptorSetLayoutBinding& samplerBindings =
-            setBindings[m_constantBufferSetIndex][samplerBindingSetInfo.bindingCount++];
-
-        samplerBindings.binding         = samplersBindingOffset + s;
-        samplerBindings.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER;
-        samplerBindings.descriptorCount = 1;
-        samplerBindings.stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
-        // We make use of immutable samplers as they will be shared among all the pipelines and
-        // don't change over the lifetime of the pipelines
-        samplerBindings.pImmutableSamplers = &m_samplers[s];
+        setBindings[setLayoutInfo.bindingCount++] =
+            VkDescriptorSetLayoutBinding{.binding         = samplersBindingOffset + s,
+                                         .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER,
+                                         .descriptorCount = 1,
+                                         .stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT,
+                                         // We make use of immutable samplers as they will be shared among all the pipelines and
+                                         // don't change over the lifetime of the pipelines
+                                         .pImmutableSamplers = &m_samplers[s]};
       }
     }
 
     // Prepare constant buffer descriptor
     if(pDesc.hasConstantData)
     {
-      VkDescriptorSetLayoutCreateInfo& constantBindingSetInfo = descriptorSetLayoutInfos[m_constantBufferSetIndex];
-      if(!constantBindingSetInfo.pBindings)
-      {
-        // Starting a dedicated set for the constant buffer?
-        assert(!constantBindingSetInfo.bindingCount);
-        constantBindingSetInfo.pBindings = setBindings[m_constantBufferSetIndex].data();
-      }
-
-      VkDescriptorSetLayoutBinding& constantBinding = setBindings[m_constantBufferSetIndex][constantBindingSetInfo.bindingCount++];
-
-      constantBinding.binding            = constantBufferBindingOffset;
-      constantBinding.descriptorType     = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-      constantBinding.descriptorCount    = 1;
-      constantBinding.stageFlags         = VK_SHADER_STAGE_COMPUTE_BIT;
-      constantBinding.pImmutableSamplers = nullptr;
+      setBindings[setLayoutInfo.bindingCount++] = VkDescriptorSetLayoutBinding{
+          .binding         = constantBufferBindingOffset,
+          .descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+          .descriptorCount = 1,
+          .stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT,
+      };
     }
 
     // Prepare image/texture descriptors
-    VkDescriptorSetLayoutCreateInfo& resourceBindingSetInfo = descriptorSetLayoutInfos[m_resourcesSetIndex];
-    if(!resourceBindingSetInfo.pBindings)
-    {
-      // Starting a dedicated set of descriptors for the images?
-      assert(!resourceBindingSetInfo.bindingCount);
-      resourceBindingSetInfo.pBindings = setBindings[m_resourcesSetIndex].data();
-    }
-
     for(uint32_t r = 0; r < pDesc.resourceRangesNum; ++r)
     {
       const nrd::ResourceRangeDesc& range = pDesc.resourceRanges[r];
 
       for(uint32_t b = 0; b < range.descriptorsNum; ++b)
       {
-        VkDescriptorSetLayoutBinding& resourceBindings = setBindings[m_resourcesSetIndex][resourceBindingSetInfo.bindingCount++];
-        resourceBindings.descriptorCount    = 1;
-        resourceBindings.stageFlags         = VK_SHADER_STAGE_COMPUTE_BIT;
-        resourceBindings.pImmutableSamplers = nullptr;
+        VkDescriptorSetLayoutBinding binding{.descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
 
         switch(range.descriptorType)
         {
           case nrd::DescriptorType::TEXTURE:
-            resourceBindings.binding        = resourcesBindingOffset + range.baseRegisterIndex + b;
-            resourceBindings.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            binding.binding        = texturesBindingOffset + iDesc.resourcesBaseRegisterIndex + b;
             break;
           case nrd::DescriptorType::STORAGE_TEXTURE:
-            resourceBindings.binding        = storageTextureAndBufferOffset + range.baseRegisterIndex + b;
-            resourceBindings.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            binding.binding        = storageTextureAndBufferOffset + iDesc.resourcesBaseRegisterIndex + b;
             break;
           default:
             assert(0);
         }
+        setBindings[setLayoutInfo.bindingCount++] = binding;
       }
     }
 
-    // Now lets build the layouts, descriptor sets and pipelines
+    // Now let's build the layouts, descriptor sets and pipelines
     NRDPipeline& nrdPipeline = m_pipelines[p];
-    nrdPipeline.descriptorLayouts.resize(numPipelineSets, VK_NULL_HANDLE);
 
-    uint32_t numBindings = 0;
-    for(uint32_t s = 0; s < numPipelineSets; ++s)
-    {
-      NVVK_CHECK(vkCreateDescriptorSetLayout(m_device, &descriptorSetLayoutInfos[s], nullptr, &nrdPipeline.descriptorLayouts[s]));
-      numBindings += descriptorSetLayoutInfos[s].bindingCount;
-    }
+    NVVK_CHECK(vkCreateDescriptorSetLayout(m_device, &setLayoutInfo, nullptr, &nrdPipeline.generalDescriptorLayout));
 
-    nrdPipeline.numBindings = numBindings;
+    nrdPipeline.numBindings = setLayoutInfo.bindingCount;
 
-    LOGI("Pipeline uses %d bindings\n", numBindings);
+    LOGI("Pipeline uses %d bindings\n", nrdPipeline.numBindings);
 
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, nullptr};
-    pipelineLayoutInfo.pSetLayouts    = nrdPipeline.descriptorLayouts.data();
-    pipelineLayoutInfo.setLayoutCount = numPipelineSets;
+    // Second one may be null; that's OK
+    const std::array<VkDescriptorSetLayout, 2> pipelineSetLayouts{nrdPipeline.generalDescriptorLayout, m_samplerDescriptorLayout};
+    const VkPipelineLayoutCreateInfo pipelineLayoutInfo{.sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                                        .setLayoutCount = iDesc.samplersInSeparateSet ? 2U : 1U,
+                                                        .pSetLayouts    = pipelineSetLayouts.data()};
 
     NVVK_CHECK(vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr, &nrdPipeline.pipelineLayout));
 
-    VkShaderModule computeShaderModule =
+    const VkShaderModule computeShaderModule =
         nvvk::createShaderModule(m_device, (const char*)pDesc.computeShaderSPIRV.bytecode, pDesc.computeShaderSPIRV.size / 4);
     assert(computeShaderModule);
 
-    VkPipelineShaderStageCreateInfo stageCreateInfo = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr};
-    stageCreateInfo.stage                           = VK_SHADER_STAGE_COMPUTE_BIT;
-    stageCreateInfo.module                          = computeShaderModule;
-    stageCreateInfo.pName                           = pDesc.shaderEntryPointName;
+    const VkPipelineShaderStageCreateInfo stageCreateInfo{.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                          .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
+                                                          .module = computeShaderModule,
+                                                          .pName  = pDesc.shaderEntryPointName};
 
-    VkComputePipelineCreateInfo pipelineCreateInfo = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, nullptr};
-    pipelineCreateInfo.layout                      = nrdPipeline.pipelineLayout;
-    pipelineCreateInfo.stage                       = stageCreateInfo;
+    const VkComputePipelineCreateInfo pipelineCreateInfo{.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                                                         .stage  = stageCreateInfo,
+                                                         .layout = nrdPipeline.pipelineLayout};
 
     NVVK_CHECK(vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &nrdPipeline.pipeline));
 
@@ -573,11 +563,6 @@ void NRDWrapper::dispatch(VkCommandBuffer commandBuffer, const nrd::DispatchDesc
     imageBarriers.push_back(barrier);
   };
 
-  // This piece of code is actually not prepared for having separate sets
-  // for each type of descriptor.
-  // If needed we would have to have one call to vkCmdPushDescriptorSetKHR for each type.
-  assert(m_constantBufferSetIndex == m_resourcesSetIndex && m_samplersSetIndex == m_resourcesSetIndex);
-
   uint32_t numResourceUpdates = 0;  // Count and index the updates
   for(uint32_t r = 0; r < pDesc.resourceRangesNum; ++r)
   {
@@ -627,19 +612,27 @@ void NRDWrapper::dispatch(VkCommandBuffer commandBuffer, const nrd::DispatchDesc
     }
   }
 
-  // Issue "dummy" sampler updates to push the immutable samplers
-  for(uint32_t s = 0; s < iDesc.samplersNum; ++s)
+  if(iDesc.samplersInSeparateSet)
   {
-    // The push descriptor update for immutable samplers will ignore the sampler in 'samplerInfo'
-    // and instead push the immutable sampler set up when the pipeline was created.
-    VkDescriptorImageInfo& samplerInfo = descriptorImageInfos[numResourceUpdates];
-    VkWriteDescriptorSet&  update      = descriptorUpdates[numResourceUpdates];
-    update.dstBinding                  = samplerBindingOffset + iDesc.samplersBaseRegisterIndex + s;
-    update.descriptorCount             = 1;
-    update.descriptorType              = VK_DESCRIPTOR_TYPE_SAMPLER;
-    update.pImageInfo                  = &samplerInfo;
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipelineLayout, 1, 1,
+                            &m_samplerDescriptorSet, 0, nullptr);
+  }
+  else
+  {
+    // Issue "dummy" sampler updates to push the immutable samplers
+    for(uint32_t s = 0; s < iDesc.samplersNum; ++s)
+    {
+      // The push descriptor update for immutable samplers will ignore the sampler in 'samplerInfo'
+      // and instead push the immutable sampler set up when the pipeline was created.
+      VkDescriptorImageInfo& samplerInfo = descriptorImageInfos[numResourceUpdates];
+      VkWriteDescriptorSet&  update      = descriptorUpdates[numResourceUpdates];
+      update.dstBinding                  = samplerBindingOffset + iDesc.samplersBaseRegisterIndex + s;
+      update.descriptorCount             = 1;
+      update.descriptorType              = VK_DESCRIPTOR_TYPE_SAMPLER;
+      update.pImageInfo                  = &samplerInfo;
 
-    ++numResourceUpdates;
+      ++numResourceUpdates;
+    }
   }
 
   VkDescriptorBufferInfo bufferInfo{};
@@ -698,7 +691,7 @@ void NRDWrapper::dispatch(VkCommandBuffer commandBuffer, const nrd::DispatchDesc
 
   // Update the descriptors. Notice how push descriptors don't require us to make sure the
   // descriptors are not in use anymore.
-  vkCmdPushDescriptorSetKHR(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipelineLayout, m_resourcesSetIndex,
+  vkCmdPushDescriptorSetKHR(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipelineLayout, 0,
                             numResourceUpdates, descriptorUpdates.data());
 
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
