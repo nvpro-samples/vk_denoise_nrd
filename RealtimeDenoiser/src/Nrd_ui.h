@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,18 +13,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION
  * SPDX-License-Identifier: Apache-2.0
  */
 #pragma once
-#include "imgui/imgui_helper.h"
+
+#include "nvgui/property_editor.hpp"
 #include <NRD.h>
 #include <NRDSettings.h>
 
 namespace Nrd_ui {
 static void render(nrd::ReblurSettings& reblurSettings, nrd::RelaxSettings& relaxSettings)
 {
-  namespace PE = ImGuiH::PropertyEditor;
+  namespace PE = nvgui::PropertyEditor;
   if(PE::treeNode("ReBlUR"))
   {
     PE::entry(
@@ -44,45 +45,49 @@ static void render(nrd::ReblurSettings& reblurSettings, nrd::RelaxSettings& rela
 
     PE::entry(
         "Diffuse Prepass Blur Radius",
-        [&]() {
-          return ImGui::SliderFloat("#Relax Radius", (float*)&reblurSettings.diffusePrepassBlurRadius, 0.0f, 100.0f);
-        },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &reblurSettings.diffusePrepassBlurRadius, 0.0f, 100.0f); },
         "pre-accumulation spatial reuse pass blur radius");
 
 
     PE::entry(
         "Specular Prepass Blur Radius",
-        [&]() {
-          return ImGui::SliderFloat("#Relax Radius", (float*)&reblurSettings.specularPrepassBlurRadius, 0.0f, 100.0f);
-        },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &reblurSettings.specularPrepassBlurRadius, 0.0f, 100.0f); },
         "pre-accumulation spatial reuse pass blur radius");
 
     PE::entry(
         "Min Base Blur Radius",
-        [&]() { return ImGui::SliderFloat("#Relax Radius", (float*)&reblurSettings.minBlurRadius, 0.0f, 100.0f); },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &reblurSettings.minBlurRadius, 0.0f, 100.0f); },
         "(pixels) - min denoising radius (for converged state)");
 
     PE::entry(
         "Max Base Blur Radius",
-        [&]() { return ImGui::SliderFloat("#Relax Radius", (float*)&reblurSettings.maxBlurRadius, 0.0f, 100.0f); },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &reblurSettings.maxBlurRadius, 0.0f, 100.0f); },
         "(pixels) - max denoising radius (gets reduced over time, 30 is a baseline for 1440p)");
 
     PE::entry(
         "Lobe Angle Fraction",
-        [&]() { return ImGui::SliderFloat("#Relax Radius", (float*)&reblurSettings.lobeAngleFraction, 0.0f, 1.0f); },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &reblurSettings.lobeAngleFraction, 0.0f, 1.0f); },
         "base fraction of diffuse or specular lobe angle used to drive normal based rejection");
 
     PE::entry(
         "Roughness Fraction",
-        [&]() { return ImGui::SliderFloat("#Relax Radius", (float*)&reblurSettings.roughnessFraction, 0.0f, 1.0f); },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &reblurSettings.roughnessFraction, 0.0f, 1.0f); },
         "base fraction of center roughness used to drive roughness based rejection");
 
     PE::entry(
         "Roughness Threshold",
         [&]() {
-          return ImGui::SliderFloat("#Relax Radius", (float*)&reblurSettings.responsiveAccumulationRoughnessThreshold, 0.0f, 1.0f);
+          return ImGui::SliderFloat("#Relax Radius", &reblurSettings.responsiveAccumulationSettings.roughnessThreshold, 0.0f, 1.0f);
         },
         "if roughness < this, temporal accumulation becomes responsive and driven by roughness (useful for animated water)");
+
+    PE::entry(
+        "Roughness History",
+        [&]() {
+          return ImGui::SliderInt("#Relax Radius", (int*)&reblurSettings.responsiveAccumulationSettings.minAccumulatedFrameNum,
+                                  0, reblurSettings.historyFixFrameNum);
+        },
+        "Preserves a few frames in history even for 0-roughness. If the signal is clean this value can be reduced to 0 or 1");
 
     PE::entry(
         "Max # of Stabilization Frames",
@@ -93,20 +98,13 @@ static void render(nrd::ReblurSettings& reblurSettings, nrd::RelaxSettings& rela
 
     PE::entry(
         "Plane Distance Sensitivity",
-        [&]() {
-          return ImGui::SliderFloat("#Relax Radius", (float*)&reblurSettings.planeDistanceSensitivity, 0.0f, 1.0f);
-        },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &reblurSettings.planeDistanceSensitivity, 0.0f, 1.0f); },
         "represents maximum allowed deviation from local tangent plane");
 
     PE::entry(
         "Enable Anti-Firefly",
         [&]() { return ImGui::Checkbox("##Enable Anti-Firefly", &reblurSettings.enableAntiFirefly); },
         "Adds bias in case of badly defined signals, but tries to fight with fireflies");
-
-    PE::entry(
-        "Enable Performance Mode",
-        [&]() { return ImGui::Checkbox("##Enable Performance Mode", &reblurSettings.enablePerformanceMode); },
-        "Boosts performance by sacrificing IQ");
 
     PE::entry(
         "Use Prepass Only For Specular Motion Estimation",
@@ -121,6 +119,15 @@ handle it somehow on its side too. Diffuse pre-pass can be just disabled, but fo
 it's still needed to find optimal hit distance for tracking. This boolean allow to use
 specular pre-pass for tracking purposes only)");
 
+    {
+      const char* const items[]                   = {"Off", "3x3", "5x5"};
+      int               hitDistReconstructionMode = int(reblurSettings.hitDistanceReconstructionMode);
+      PE::entry("Hit Distance Reconstruction Mode", [&]() {
+        return ImGui::ListBox("##HitDistanceReconstructionMode", &hitDistReconstructionMode, items, IM_ARRAYSIZE(items));
+      });
+      reblurSettings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode(hitDistReconstructionMode);
+    }
+
     PE::treePop();
   }
 
@@ -132,29 +139,27 @@ specular pre-pass for tracking purposes only)");
       PE::entry(
           "Acceleration Amount",
           [&]() {
-            return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.antilagSettings.accelerationAmount, 0.0f, 1.0f);
+            return ImGui::SliderFloat("#Relax Radius", &relaxSettings.antilagSettings.accelerationAmount, 0.0f, 1.0f);
           },
           "amount of history acceleration if history clamping happened in pixel");
 
       PE::entry(
           "Spatial Sigma Scale",
           [&]() {
-            return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.antilagSettings.spatialSigmaScale, 0.0f, 10.0f);
+            return ImGui::SliderFloat("#Relax Radius", &relaxSettings.antilagSettings.spatialSigmaScale, 0.0f, 10.0f);
           },
           "amount of history reset, 0.0 - no reset, 1.0 - full reset");
 
       PE::entry(
           "Temporal Sigma Scale",
           [&]() {
-            return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.antilagSettings.temporalSigmaScale, 0.0f, 10.0f);
+            return ImGui::SliderFloat("#Relax Radius", &relaxSettings.antilagSettings.temporalSigmaScale, 0.0f, 10.0f);
           },
           "amount of history reset, 0.0 - no reset, 1.0 - full reset");
 
       PE::entry(
           "Reset Amount",
-          [&]() {
-            return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.antilagSettings.resetAmount, 0.0f, 1.0f);
-          },
+          [&]() { return ImGui::SliderFloat("#Relax Radius", &relaxSettings.antilagSettings.resetAmount, 0.0f, 1.0f); },
           "amount of history reset, 0.0 - no reset, 1.0 - full reset");
 
       PE::treePop();
@@ -162,16 +167,12 @@ specular pre-pass for tracking purposes only)");
 
     PE::entry(
         "Diffuse Prepass Blur Radius",
-        [&]() {
-          return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.diffusePrepassBlurRadius, 0.0f, 100.0f);
-        },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &relaxSettings.diffusePrepassBlurRadius, 0.0f, 100.0f); },
         "pre-accumulation spatial reuse pass blur radius (0 = disabled, must be used in case of probabilistic sampling)");
 
     PE::entry(
         "Specular Prepass Blur Radius",
-        [&]() {
-          return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.specularPrepassBlurRadius, 0.0f, 100.0f);
-        },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &relaxSettings.specularPrepassBlurRadius, 0.0f, 100.0f); },
         "pre-accumulation spatial reuse pass blur radius (0 = disabled, must be used in case of probabilistic sampling)");
 
     PE::entry(
@@ -207,46 +208,46 @@ specular pre-pass for tracking purposes only)");
 
     PE::entry(
         "Diffuse Phi Luminance",
-        [&]() { return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.diffusePhiLuminance, 0.0f, 3.0f); },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &relaxSettings.diffusePhiLuminance, 0.0f, 3.0f); },
         "A-trous edge stopping Luminance sensitivity");
 
     PE::entry(
         "Specular Phi Luminance",
-        [&]() { return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.specularPhiLuminance, 0.0f, 3.0f); },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &relaxSettings.specularPhiLuminance, 0.0f, 3.0f); },
         "A-trous edge stopping Luminance sensitivity");
 
 
     PE::entry(
         "Lobe Angle Fraction",
-        [&]() { return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.lobeAngleFraction, 0.0f, 1.0f); },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &relaxSettings.lobeAngleFraction, 0.0f, 1.0f); },
         "base fraction of diffuse or specular lobe angle used to drive normal based rejection");
 
     PE::entry(
         "Roughness Fraction",
-        [&]() { return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.roughnessFraction, 0.0f, 1.0f); },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &relaxSettings.roughnessFraction, 0.0f, 1.0f); },
         "base fraction of center roughness used to drive roughness based rejection");
 
     PE::entry(
         "Specular Variance Boost",
-        [&]() { return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.specularVarianceBoost, 0.0f, 10.0f); },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &relaxSettings.specularVarianceBoost, 0.0f, 10.0f); },
         "how much variance we inject to specular if reprojection confidence is low");
 
     PE::entry(
         "Specular Lobe Angle Slack",
-        [&]() { return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.specularLobeAngleSlack, 0.0f, 1.0f); },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &relaxSettings.specularLobeAngleSlack, 0.0f, 1.0f); },
         "slack for the specular lobe angle used in normal based rejection of specular during A-Trous passes");
 
     PE::entry(
         "History Fix Edge Stopping Normal Power",
         [&]() {
-          return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.historyFixEdgeStoppingNormalPower, 0.0f, 10.0f);
+          return ImGui::SliderFloat("#Relax Radius", &relaxSettings.historyFixEdgeStoppingNormalPower, 0.0f, 10.0f);
         },
         "normal edge stopper for history reconstruction pass");
 
     PE::entry(
-        "History Clamping Color Box Sigma Scale",
+        "Fast History Clamping Color Box Sigma Scale",
         [&]() {
-          return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.historyClampingColorBoxSigmaScale, 1.0f, 3.0f);
+          return ImGui::SliderFloat("#Relax Radius", &relaxSettings.fastHistoryClampingSigmaScale, 1.0f, 3.0f);
         },
         "standard deviation scale of color box for clamping main slow history to responsive fast history");
 
@@ -264,64 +265,53 @@ specular pre-pass for tracking purposes only)");
 
     PE::entry(
         "Diffuse Min Luminance Weight",
-        [&]() {
-          return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.diffuseMinLuminanceWeight, 0.0f, 1.0f);
-        },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &relaxSettings.diffuseMinLuminanceWeight, 0.0f, 1.0f); },
         "A-trous edge stopping Luminance weight minimum");
 
     PE::entry(
         "Specular Min Luminance Weight",
-        [&]() {
-          return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.specularMinLuminanceWeight, 0.0f, 1.0f);
-        },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &relaxSettings.specularMinLuminanceWeight, 0.0f, 1.0f); },
         "A-trous edge stopping Luminance weight minimum");
 
     PE::entry(
         "Depth Threshold",
-        [&]() { return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.depthThreshold, 0.0f, 0.01f); },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &relaxSettings.depthThreshold, 0.0f, 0.01f); },
         "Depth threshold for spatial passes");
 
     PE::entry(
         "Confidence Driven Relaxation Multiplier",
         [&]() {
-          return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.confidenceDrivenRelaxationMultiplier, 0.0f, 1.0f);
+          return ImGui::SliderFloat("#Relax Radius", &relaxSettings.confidenceDrivenRelaxationMultiplier, 0.0f, 1.0f);
         },
         "Confidence inputs can affect spatial blurs, relaxing some weights in areas with low confidence");
 
     PE::entry(
         "Confidence Driven Luminance Edge Stopping Relaxation",
         [&]() {
-          return ImGui::SliderFloat("#Relax Radius",
-                                    (float*)&relaxSettings.confidenceDrivenLuminanceEdgeStoppingRelaxation, 0.0f, 1.0f);
+          return ImGui::SliderFloat("#Relax Radius", &relaxSettings.confidenceDrivenLuminanceEdgeStoppingRelaxation, 0.0f, 1.0f);
         },
         "Confidence inputs can affect spatial blurs, relaxing some weights in areas with low confidence");
 
     PE::entry(
         "Confidence Driven Normal Edge Stopping Relaxation",
         [&]() {
-          return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.confidenceDrivenNormalEdgeStoppingRelaxation, 0.0f, 1.0f);
+          return ImGui::SliderFloat("#Relax Radius", &relaxSettings.confidenceDrivenNormalEdgeStoppingRelaxation, 0.0f, 1.0f);
         },
         "Confidence inputs can affect spatial blurs, relaxing some weights in areas with low confidence");
 
     PE::entry(
         "Luminance Edge Stopping Relaxation",
-        [&]() {
-          return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.luminanceEdgeStoppingRelaxation, 0.0f, 1.0f);
-        },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &relaxSettings.luminanceEdgeStoppingRelaxation, 0.0f, 1.0f); },
         "How much we relax roughness based rejection for spatial filter in areas where specular reprojection is low");
 
     PE::entry(
         "Normal Edge Stopping Relaxation",
-        [&]() {
-          return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.normalEdgeStoppingRelaxation, 0.0f, 1.0f);
-        },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &relaxSettings.normalEdgeStoppingRelaxation, 0.0f, 1.0f); },
         "How much we relax rejection for spatial filter based on roughness and view vector");
 
     PE::entry(
         "Roughness Edge Stopping Relaxation",
-        [&]() {
-          return ImGui::SliderFloat("#Relax Radius", (float*)&relaxSettings.roughnessEdgeStoppingRelaxation, 0.0f, 1.0f);
-        },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &relaxSettings.roughnessEdgeStoppingRelaxation, 0.0f, 1.0f); },
         "How much we relax rejection for spatial filter based on roughness and view vector");
 
 
@@ -331,6 +321,16 @@ specular pre-pass for tracking purposes only)");
     PE::entry("Enable Roughness Edge Stopping", [&]() {
       return ImGui::Checkbox("##Enable Roughness Edge Stopping", &relaxSettings.enableRoughnessEdgeStopping);
     });
+
+    {
+      const char* const items[]                   = {"Off", "3x3", "5x5"};
+      int               hitDistReconstructionMode = int(relaxSettings.hitDistanceReconstructionMode);
+      PE::entry("Hit Distance Reconstruction Mode", [&]() {
+        return ImGui::ListBox("##HitDistanceReconstructionMode", &hitDistReconstructionMode, items, IM_ARRAYSIZE(items));
+      });
+      relaxSettings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode(hitDistReconstructionMode);
+    }
+
 
     PE::treePop();
   }

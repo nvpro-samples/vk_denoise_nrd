@@ -17,14 +17,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "NRDWrapper.hpp"
+#include "nrd_wrapper.hpp"
 
-#include <nvvk/images_vk.hpp>
-#include <nvvk/debug_util_vk.hpp>
-#include <nvvk/error_vk.hpp>
-#include <nvvk/shaders_vk.hpp>
-#include <nvh/nvprint.hpp>
-#include <nvvk/commands_vk.hpp>
+#include <nvvk/command_pools.hpp>
+#include <nvvk/debug_util.hpp>
+#include <nvvk/check_error.hpp>
+#include <nvvk/shaders.hpp>
+#include <nvutils/logger.hpp>
+#include <nvvk/commands.hpp>
+#include <nvvk/default_structs.hpp>
 
 #include <NRDDescs.h>
 
@@ -43,7 +44,7 @@
     assert(res == nrd::Result::SUCCESS && #x);                                                                         \
   }
 
-#define ARRAYSIZE(x) (sizeof(x) / sizeof(*x))
+#define NRD_ARRAYSIZE(x) (sizeof(x) / sizeof(*x))
 
 // Translate NRD format enum values to Vulkan formats
 static const VkFormat g_NRDFormatToVkFormat[] = {
@@ -103,17 +104,17 @@ static const VkFormat g_NRDFormatToVkFormat[] = {
     VK_FORMAT_E5B9G9R9_UFLOAT_PACK32,
 };
 
-static_assert(ARRAYSIZE(g_NRDFormatToVkFormat) == size_t(nrd::Format::MAX_NUM));
+static_assert(NRD_ARRAYSIZE(g_NRDFormatToVkFormat) == size_t(nrd::Format::MAX_NUM));
 
 static inline VkFormat NRDtoVKFormat(nrd::Format nrdFormat)
 {
-  assert(size_t(nrdFormat) < ARRAYSIZE(g_NRDFormatToVkFormat));
+  assert(size_t(nrdFormat) < NRD_ARRAYSIZE(g_NRDFormatToVkFormat));
   return g_NRDFormatToVkFormat[size_t(nrdFormat)];
 }
 
 // Translate NRD descriptor types to Vulkan descriptor types
 static const VkDescriptorType g_NRDDescriptorTypeToVulkan[] = {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE};
-static_assert(ARRAYSIZE(g_NRDDescriptorTypeToVulkan) == size_t(nrd::DescriptorType::MAX_NUM));
+static_assert(NRD_ARRAYSIZE(g_NRDDescriptorTypeToVulkan) == size_t(nrd::DescriptorType::MAX_NUM));
 
 static inline VkDescriptorType NRDDescriptorTypeToVulkan(nrd::DescriptorType type)
 {
@@ -123,11 +124,11 @@ static inline VkDescriptorType NRDDescriptorTypeToVulkan(nrd::DescriptorType typ
 
 // Translate NRD filters enum to Vulkan texture filters
 static const VkFilter g_NRDtoVkFilter[] = {VK_FILTER_NEAREST, VK_FILTER_LINEAR};
-static_assert(ARRAYSIZE(g_NRDtoVkFilter) == size_t(nrd::Sampler::MAX_NUM));
+static_assert(NRD_ARRAYSIZE(g_NRDtoVkFilter) == size_t(nrd::Sampler::MAX_NUM));
 
 static inline VkFilter NRDtoVkFilter(nrd::Sampler sampler)
 {
-  assert(size_t(sampler) < ARRAYSIZE(g_NRDtoVkFilter));
+  assert(size_t(sampler) < NRD_ARRAYSIZE(g_NRDtoVkFilter));
   return g_NRDtoVkFilter[size_t(sampler)];
 }
 
@@ -138,12 +139,15 @@ static inline uint16_t DivideRoundUp(uint32_t dividend, uint16_t divisor)
 
 
 NRDWrapper::NRDWrapper(nvvk::ResourceAllocator& alloc,
+                       const nvvk::QueueInfo&   queue,
+                       nvvk::SamplerPool&       samplerPool,
                        uint16_t                 width,
                        uint16_t                 height,
-                       const nvvk::Texture      userTexturePool[size_t(nrd::ResourceType::MAX_NUM)])
+                       const nvvk::Image        userTexturePool[size_t(nrd::ResourceType::MAX_NUM)])
     : m_device(alloc.getDevice())
+    , m_queue(queue)
+    , m_samplerPool(samplerPool)
     , m_resAlloc(alloc)
-    , m_dbgUtil(m_device)
 {
   // NRDWrapper currently only exposes REBLUR_DIFFUSE_SPECULAR and RELAX_DIFFUSE_SPECULAR denoisers.
   // We directly use the nrd::Denoiser enum as 'identifier'.
@@ -160,33 +164,33 @@ NRDWrapper::NRDWrapper(nvvk::ResourceAllocator& alloc,
   CALL_NRD(CreateInstance(instanceDesc, m_instance));
 
   // Query the Denoiser instance for its required resources and create them
-  nrd::InstanceDesc iDesc = GetInstanceDesc(*m_instance);
+  const nrd::InstanceDesc* iDesc = GetInstanceDesc(*m_instance);
 
   // Create the pool of permanent textures
-  for(uint32_t t = 0; t < iDesc.permanentPoolSize; ++t)
+  for(uint32_t t = 0; t < iDesc->permanentPoolSize; ++t)
   {
-    nvvk::Texture nrdTexture = createTexture(iDesc.permanentPool[t], width, height);
+    nvvk::Image nrdTexture = createTexture(iDesc->permanentPool[t], width, height);
     m_permanentTextures.push_back(nrdTexture);
 
     std::stringstream name;
     name << "NRD_PermanentPool " << t;
-    m_dbgUtil.setObjectName(nrdTexture.image, name.str());
-    m_dbgUtil.setObjectName(nrdTexture.descriptor.imageView, name.str());
+    nvvk::DebugUtil::getInstance().setObjectName(nrdTexture.image, name.str());
+    nvvk::DebugUtil::getInstance().setObjectName(nrdTexture.descriptor.imageView, name.str());
   }
 
   /* Create the pool of transient textures. It would be possible to
    * the application to reuse or alias these textures and their memory outside of the denoiser
    * but we don't make use of that here.
    */
-  for(uint32_t t = 0; t < iDesc.transientPoolSize; ++t)
+  for(uint32_t t = 0; t < iDesc->transientPoolSize; ++t)
   {
-    nvvk::Texture nrdTexture = createTexture(iDesc.transientPool[t], width, height);
+    nvvk::Image nrdTexture = createTexture(iDesc->transientPool[t], width, height);
     m_transientTextures.push_back(nrdTexture);
 
     std::stringstream name;
     name << "NRD_TransientPool " << t;
-    m_dbgUtil.setObjectName(nrdTexture.image, name.str());
-    m_dbgUtil.setObjectName(nrdTexture.descriptor.imageView, name.str());
+    nvvk::DebugUtil::getInstance().setObjectName(nrdTexture.image, name.str());
+    nvvk::DebugUtil::getInstance().setObjectName(nrdTexture.descriptor.imageView, name.str());
   }
 
   // Make a copy of the user texture pool
@@ -199,11 +203,11 @@ NRDWrapper::NRDWrapper(nvvk::ResourceAllocator& alloc,
   {
     const VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL;
 
-    nvvk::CommandPool cpool(m_device, 0);
-    VkCommandBuffer   cmd = cpool.createCommandBuffer();
+    VkCommandPool   cmdPool = nvvk::createTransientCommandPool(m_device, m_queue.familyIndex);
+    VkCommandBuffer cmd     = nvvk::createSingleTimeCommands(m_device, cmdPool);
 
     auto transitionTexture = [cmd, layout](VkImage image) {
-      nvvk::cmdBarrierImageLayout(cmd, image, VK_IMAGE_LAYOUT_UNDEFINED, layout);
+      nvvk::cmdImageMemoryBarrier(cmd, {.image = image, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = layout});
 
       // Clear to avoid garbage data
       VkClearColorValue       clear_value = {{0.F, 0.F, 0.F, 0.F}};
@@ -214,30 +218,37 @@ NRDWrapper::NRDWrapper(nvvk::ResourceAllocator& alloc,
     for(auto& t : m_transientTextures)
     {
       transitionTexture(t.image);
+      t.descriptor.imageLayout = layout;
     }
     for(auto& t : m_permanentTextures)
     {
       transitionTexture(t.image);
+      t.descriptor.imageLayout = layout;
     }
 
-    cpool.submitAndWait(cmd);
+    NVVK_CHECK(nvvk::endSingleTimeCommands(cmd, m_device, cmdPool, m_queue.queue));
+    vkDestroyCommandPool(m_device, cmdPool, nullptr);
   }
 
   // Create the samplers
-  for(uint32_t s = 0; s < iDesc.samplersNum; ++s)
+  for(uint32_t s = 0; s < iDesc->samplersNum; ++s)
   {
-    auto                filter = NRDtoVkFilter(iDesc.samplers[s]);
-    VkSamplerCreateInfo sInfo =
-        nvvk::makeSamplerCreateInfo(filter, filter, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                                    VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_FALSE, 1.0f, VK_SAMPLER_MIPMAP_MODE_NEAREST);
+    auto                filter = NRDtoVkFilter(iDesc->samplers[s]);
+    VkSamplerCreateInfo sInfo  = DEFAULT_VkSamplerCreateInfo;
+    sInfo.minFilter            = filter;
+    sInfo.magFilter            = filter;
+    sInfo.addressModeU = sInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sInfo.mipmapMode                        = VK_SAMPLER_MIPMAP_MODE_NEAREST;
 
-    VkSampler sampler = alloc.acquireSampler(sInfo);
+    VkSampler sampler;
+
+    NVVK_CHECK(m_samplerPool.acquireSampler(sampler, sInfo));
     m_samplers.push_back(sampler);
   }
 
   // Create the constant buffer
-  m_constantBuffer = m_resAlloc.createBuffer(VkDeviceSize(iDesc.constantBufferMaxDataSize),
-                                             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+  NVVK_CHECK(m_resAlloc.createBuffer(m_constantBuffer, VkDeviceSize(iDesc->constantBufferMaxDataSize),
+                                     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
 
   createPipelines();
 }
@@ -246,35 +257,35 @@ NRDWrapper::~NRDWrapper()
 {
   vkDeviceWaitIdle(m_device);
 
-  m_resAlloc.destroy(m_constantBuffer);
+  m_resAlloc.destroyBuffer(m_constantBuffer);
   for(auto s : m_samplers)
   {
-    m_resAlloc.releaseSampler(s);
+    m_samplerPool.releaseSampler(s);
   }
   for(auto& t : m_transientTextures)
   {
-    m_resAlloc.destroy(t);
+    m_resAlloc.destroyImage(t);
   }
   for(auto& t : m_permanentTextures)
   {
-    m_resAlloc.destroy(t);
+    m_resAlloc.destroyImage(t);
   }
-  if(m_samplerDescriptorLayout)  // If samplers were in a different set
+  if(m_samplerConstBufferDescriptorLayout)  // If samplers were in a different set
   {
-    vkDestroyDescriptorSetLayout(m_device, m_samplerDescriptorLayout, nullptr);
-    vkDestroyDescriptorPool(m_device, m_samplerDescriptorPool, nullptr);
+    vkDestroyDescriptorSetLayout(m_device, m_samplerConstBufferDescriptorLayout, nullptr);
+    vkDestroyDescriptorPool(m_device, m_samplerConstBufferDescriptorPool, nullptr);
   }
   for(auto& p : m_pipelines)
   {
     vkDestroyPipeline(m_device, p.pipeline, nullptr);
     vkDestroyPipelineLayout(m_device, p.pipelineLayout, nullptr);
-    vkDestroyDescriptorSetLayout(m_device, p.generalDescriptorLayout, nullptr);
+    vkDestroyDescriptorSetLayout(m_device, p.resourceDescriptorLayout, nullptr);
   }
 
   nrd::DestroyInstance(*m_instance);
 }
 
-void NRDWrapper::setUserPoolTexture(nrd::ResourceType resource, nvvk::Texture texture)
+void NRDWrapper::setUserPoolTexture(nrd::ResourceType resource, nvvk::Image texture)
 {
   m_userTexturePool[size_t(resource)] = texture;
 }
@@ -283,7 +294,7 @@ VkFormat NRDWrapper::getNormalRoughnessFormat()
 {
   // The NRD library can be compiled with different kinds of normal encodings
   // in mind. We have to chose accordingly.
-  switch(nrd::GetLibraryDesc().normalEncoding)
+  switch(nrd::GetLibraryDesc()->normalEncoding)
   {
     case nrd::NormalEncoding::RGBA8_UNORM:
       return VK_FORMAT_R8G8B8A8_UNORM;
@@ -323,20 +334,23 @@ void NRDWrapper::setRELAXSettings(const nrd::RelaxSettings& settings)
   setDenoiserSettings(nrd::Identifier(nrd::Denoiser::RELAX_DIFFUSE_SPECULAR), &settings);
 }
 
-nvvk::Texture NRDWrapper::createTexture(const nrd::TextureDesc& tDesc, uint16_t width, uint16_t height)
+nvvk::Image NRDWrapper::createTexture(const nrd::TextureDesc& tDesc, uint16_t width, uint16_t height)
 {
 
   uint16_t texWidth  = DivideRoundUp(width, tDesc.downsampleFactor);
   uint16_t texHeight = DivideRoundUp(height, tDesc.downsampleFactor);
 
-  VkImageCreateInfo     imgInfo  = nvvk::makeImage2DCreateInfo({texWidth, texHeight}, NRDtoVKFormat(tDesc.format),
-                                                               VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT, false);
-  nvvk::Image           image    = m_resAlloc.createImage(imgInfo);
-  VkImageViewCreateInfo viewInfo = nvvk::makeImageViewCreateInfo(image.image, imgInfo);
-  nvvk::Texture         texture  = m_resAlloc.createTexture(image, viewInfo);
+  VkImageCreateInfo imageInfo = DEFAULT_VkImageCreateInfo;
+  imageInfo.extent            = {texWidth, texHeight, 1};
+  imageInfo.format            = NRDtoVKFormat(tDesc.format);
+  imageInfo.usage             = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
 
-  assert(image.image && texture.descriptor.imageView);
-  return texture;
+  nvvk::Image image;
+
+  NVVK_CHECK(m_resAlloc.createImage(image, imageInfo, DEFAULT_VkImageViewCreateInfo));
+
+  assert(image.image && image.descriptor.imageView);
+  return image;
 }
 
 // NRD provides us with a description of all involved pipelines.
@@ -348,23 +362,25 @@ nvvk::Texture NRDWrapper::createTexture(const nrd::TextureDesc& tDesc, uint16_t 
 // created from NRD's descriptions.
 void NRDWrapper::createPipelines()
 {
-  const nrd::InstanceDesc iDesc = nrd::GetInstanceDesc(*m_instance);
-  const nrd::LibraryDesc  lDesc = nrd::GetLibraryDesc();
+  const nrd::InstanceDesc* iDesc = nrd::GetInstanceDesc(*m_instance);
+  const nrd::LibraryDesc*  lDesc = nrd::GetLibraryDesc();
 
   // These are the base binding indices for each type of binding
-  const uint32_t constantBufferBindingOffset   = lDesc.spirvBindingOffsets.constantBufferOffset;
-  const uint32_t samplersBindingOffset         = lDesc.spirvBindingOffsets.samplerOffset;
-  const uint32_t texturesBindingOffset         = lDesc.spirvBindingOffsets.textureOffset;
-  const uint32_t storageTextureAndBufferOffset = lDesc.spirvBindingOffsets.storageTextureAndBufferOffset;
+  const uint32_t constantBufferBindingOffset   = lDesc->spirvBindingOffsets.constantBufferOffset;
+  const uint32_t samplersBindingOffset         = lDesc->spirvBindingOffsets.samplerOffset;
+  const uint32_t texturesBindingOffset         = lDesc->spirvBindingOffsets.textureOffset;
+  const uint32_t storageTextureAndBufferOffset = lDesc->spirvBindingOffsets.storageTextureAndBufferOffset;
 
   // If samplers are in a separate descriptor set, create a descriptor set for
   // them now.
   // If NRD placed samplers in a separate descriptor set, create it now.
-  if(iDesc.samplersInSeparateSet)
+  bool samplersInSeparateSet = iDesc->constantBufferAndSamplersSpaceIndex != iDesc->resourcesSpaceIndex;
+  assert(samplersInSeparateSet);
+
   {
-    // Prepare sampler descriptors
-    std::vector<VkDescriptorSetLayoutBinding> setBindings(iDesc.samplersNum);
-    for(uint32_t s = 0; s < iDesc.samplersNum; ++s)
+    // Prepare immutable sampler descriptors
+    std::vector<VkDescriptorSetLayoutBinding> setBindings(iDesc->samplersNum + 1);
+    for(uint32_t s = 0; s < iDesc->samplersNum; ++s)
     {
       setBindings[s] = VkDescriptorSetLayoutBinding{.binding         = samplersBindingOffset + s,
                                                     .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER,
@@ -374,82 +390,85 @@ void NRDWrapper::createPipelines()
                                                     // don't change over the lifetime of the pipelines
                                                     .pImmutableSamplers = &m_samplers[s]};
     }
-    const VkDescriptorSetLayoutCreateInfo samplerLayoutInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                                                            .bindingCount = iDesc.samplersNum,
-                                                            .pBindings    = setBindings.data()};
-    NVVK_CHECK(vkCreateDescriptorSetLayout(m_device, &samplerLayoutInfo, nullptr, &m_samplerDescriptorLayout));
+    // Prepare constant buffer descriptor
+    setBindings[iDesc->samplersNum] = VkDescriptorSetLayoutBinding{
+        .binding         = constantBufferBindingOffset,
+        .descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 1,
+        .stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT,
+    };
 
-    const VkDescriptorPoolSize immutableSamplerSize{.type = VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = iDesc.samplersNum};
-    const VkDescriptorPoolCreateInfo poolInfo{
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &immutableSamplerSize};
-    NVVK_CHECK(vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &m_samplerDescriptorPool));
+    const VkDescriptorSetLayoutCreateInfo samplerLayoutInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                                            .flags        = 0,
+                                                            .bindingCount = (uint32_t)setBindings.size(),
+                                                            .pBindings    = setBindings.data()};
+    NVVK_CHECK(vkCreateDescriptorSetLayout(m_device, &samplerLayoutInfo, nullptr, &m_samplerConstBufferDescriptorLayout));
+
+    const VkDescriptorPoolSize poolSizes[] = {{.type = VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = iDesc->samplersNum},
+                                              {.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1}};
+
+    const VkDescriptorPoolCreateInfo poolInfo{.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                                              .maxSets       = 1,
+                                              .poolSizeCount = NRD_ARRAYSIZE(poolSizes),
+                                              .pPoolSizes    = poolSizes};
+    NVVK_CHECK(vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &m_samplerConstBufferDescriptorPool));
+
     const VkDescriptorSetAllocateInfo descriptorSetInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-                                                        .descriptorPool     = m_samplerDescriptorPool,
+                                                        .descriptorPool     = m_samplerConstBufferDescriptorPool,
                                                         .descriptorSetCount = 1,
-                                                        .pSetLayouts        = &m_samplerDescriptorLayout};
-    NVVK_CHECK(vkAllocateDescriptorSets(m_device, &descriptorSetInfo, &m_samplerDescriptorSet));
+                                                        .pSetLayouts        = &m_samplerConstBufferDescriptorLayout};
+
+    NVVK_CHECK(vkAllocateDescriptorSets(m_device, &descriptorSetInfo, &m_samplerConstBufferDescriptorSet));
+  }
+
+  // Bind the constant buffer once and leave it there
+  {
+    VkDescriptorBufferInfo bufferInfo{};
+    bufferInfo.buffer = m_constantBuffer.buffer;
+    bufferInfo.offset = 0;
+    bufferInfo.range  = VK_WHOLE_SIZE;
+
+    VkWriteDescriptorSet constantBufferUpdate = {.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                                 .pNext           = nullptr,
+                                                 .dstSet          = m_samplerConstBufferDescriptorSet,
+                                                 .dstBinding      = constantBufferBindingOffset,
+                                                 .descriptorCount = 1,
+                                                 .descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                                 .pBufferInfo     = &bufferInfo};
+    vkUpdateDescriptorSets(m_device, 1, &constantBufferUpdate, 0, nullptr);
   }
 
   // Determine the maximum number of bindings a pipeline can have
-  uint32_t maxNumtextureBindings = 0;
-  for(uint32_t p = 0; p < iDesc.pipelinesNum; ++p)
+  uint32_t maxNumTextureBindings = 0;
+  for(uint32_t p = 0; p < iDesc->pipelinesNum; ++p)
   {
-    const nrd::PipelineDesc& nrdPipelineDesc = iDesc.pipelines[p];
+    const nrd::PipelineDesc& nrdPipelineDesc = iDesc->pipelines[p];
 
     uint32_t numResources = 0;
     for(uint32_t r = 0; r < nrdPipelineDesc.resourceRangesNum; ++r)
     {
       numResources += nrdPipelineDesc.resourceRanges[r].descriptorsNum;
     }
-    maxNumtextureBindings = std::max(maxNumtextureBindings, numResources);
+    maxNumTextureBindings = std::max(maxNumTextureBindings, numResources);
   }
 
-  m_pipelines.resize(iDesc.pipelinesNum);
+  m_pipelines.resize(iDesc->pipelinesNum);
 
-  for(uint32_t p = 0; p < iDesc.pipelinesNum; ++p)
+#pragma omp parallel for
+  for(int p = 0; p < static_cast<int>(iDesc->pipelinesNum); ++p)
   {
     LOGI("Compiling NRD pipeline %d\n", p);
 
-    const nrd::PipelineDesc& pDesc = iDesc.pipelines[p];
+    const nrd::PipelineDesc& pDesc = iDesc->pipelines[p];
 
     // Just reserve maximum number of bindings - we may not make use of them all for each pipeline
-    // 1 constant buffer
-    // m textures
-    // n samplers
-    std::vector<VkDescriptorSetLayoutBinding> setBindings(1 + maxNumtextureBindings
-                                                          + (iDesc.samplersInSeparateSet ? 0 : iDesc.samplersNum));
+    // m textures (either for sampling or as storage)
+    std::vector<VkDescriptorSetLayoutBinding> setBindings(maxNumTextureBindings);
     // On the main descriptor set, we make use of push descriptors which makes it so much easier to use and update.
     // But we can't use push descriptors for both; see VUID-VkPipelineLayoutCreateInfo-pSetLayouts-00293
     VkDescriptorSetLayoutCreateInfo setLayoutInfo{.sType     = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                                   .flags     = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR,
                                                   .pBindings = setBindings.data()};
-
-    if(!iDesc.samplersInSeparateSet)
-    {
-      // Prepare sampler descriptors
-      for(uint32_t s = 0; s < iDesc.samplersNum; ++s)
-      {
-        setBindings[setLayoutInfo.bindingCount++] =
-            VkDescriptorSetLayoutBinding{.binding         = samplersBindingOffset + s,
-                                         .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER,
-                                         .descriptorCount = 1,
-                                         .stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT,
-                                         // We make use of immutable samplers as they will be shared among all the pipelines and
-                                         // don't change over the lifetime of the pipelines
-                                         .pImmutableSamplers = &m_samplers[s]};
-      }
-    }
-
-    // Prepare constant buffer descriptor
-    if(pDesc.hasConstantData)
-    {
-      setBindings[setLayoutInfo.bindingCount++] = VkDescriptorSetLayoutBinding{
-          .binding         = constantBufferBindingOffset,
-          .descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-          .descriptorCount = 1,
-          .stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT,
-      };
-    }
 
     // Prepare image/texture descriptors
     for(uint32_t r = 0; r < pDesc.resourceRangesNum; ++r)
@@ -464,11 +483,11 @@ void NRDWrapper::createPipelines()
         {
           case nrd::DescriptorType::TEXTURE:
             binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-            binding.binding        = texturesBindingOffset + iDesc.resourcesBaseRegisterIndex + b;
+            binding.binding        = texturesBindingOffset + iDesc->resourcesBaseRegisterIndex + b;
             break;
           case nrd::DescriptorType::STORAGE_TEXTURE:
             binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-            binding.binding        = storageTextureAndBufferOffset + iDesc.resourcesBaseRegisterIndex + b;
+            binding.binding        = storageTextureAndBufferOffset + iDesc->resourcesBaseRegisterIndex + b;
             break;
           default:
             assert(0);
@@ -480,28 +499,32 @@ void NRDWrapper::createPipelines()
     // Now let's build the layouts, descriptor sets and pipelines
     NRDPipeline& nrdPipeline = m_pipelines[p];
 
-    NVVK_CHECK(vkCreateDescriptorSetLayout(m_device, &setLayoutInfo, nullptr, &nrdPipeline.generalDescriptorLayout));
+    NVVK_CHECK(vkCreateDescriptorSetLayout(m_device, &setLayoutInfo, nullptr, &nrdPipeline.resourceDescriptorLayout));
 
     nrdPipeline.numBindings = setLayoutInfo.bindingCount;
-
     LOGI("Pipeline uses %d bindings\n", nrdPipeline.numBindings);
 
-    // Second one may be null; that's OK
-    const std::array<VkDescriptorSetLayout, 2> pipelineSetLayouts{nrdPipeline.generalDescriptorLayout, m_samplerDescriptorLayout};
+    // NRD using these two set indexes is a hardcoded assumption that NRD promised not to break
+    assert(iDesc->constantBufferAndSamplersSpaceIndex == 1 && iDesc->resourcesSpaceIndex == 0);
+
+    // Each pipeline is accessing the global sampler+constant buffer set as well as a pipeline-specific set of textures
+    const std::array<VkDescriptorSetLayout, 2> pipelineSetLayouts{nrdPipeline.resourceDescriptorLayout,
+                                                                  m_samplerConstBufferDescriptorLayout};
     const VkPipelineLayoutCreateInfo pipelineLayoutInfo{.sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                                                        .setLayoutCount = iDesc.samplersInSeparateSet ? 2U : 1U,
+                                                        .setLayoutCount = 2U,
                                                         .pSetLayouts    = pipelineSetLayouts.data()};
 
     NVVK_CHECK(vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr, &nrdPipeline.pipelineLayout));
 
-    const VkShaderModule computeShaderModule =
-        nvvk::createShaderModule(m_device, (const char*)pDesc.computeShaderSPIRV.bytecode, pDesc.computeShaderSPIRV.size / 4);
+    VkShaderModule computeShaderModule;
+    NVVK_CHECK(nvvk::createShaderModule(computeShaderModule, m_device,
+                                        {(const uint32_t*)pDesc.computeShaderSPIRV.bytecode, pDesc.computeShaderSPIRV.size / 4}));
     assert(computeShaderModule);
 
     const VkPipelineShaderStageCreateInfo stageCreateInfo{.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                                           .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
                                                           .module = computeShaderModule,
-                                                          .pName  = pDesc.shaderEntryPointName};
+                                                          .pName  = "main"};
 
     const VkComputePipelineCreateInfo pipelineCreateInfo{.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
                                                          .stage  = stageCreateInfo,
@@ -534,35 +557,44 @@ void NRDWrapper::denoise(const nrd::Identifier* denoisers, uint32_t denoisersNum
 // descriptor binding index.
 void NRDWrapper::dispatch(VkCommandBuffer commandBuffer, const nrd::DispatchDesc& dispatchDesc)
 {
-  const nrd::LibraryDesc&  lDesc = nrd::GetLibraryDesc();
-  const nrd::InstanceDesc& iDesc = nrd::GetInstanceDesc(*m_instance);
-  const nrd::PipelineDesc& pDesc = iDesc.pipelines[dispatchDesc.pipelineIndex];
+  const nrd::LibraryDesc*  lDesc = nrd::GetLibraryDesc();
+  const nrd::InstanceDesc* iDesc = nrd::GetInstanceDesc(*m_instance);
+  const nrd::PipelineDesc& pDesc = iDesc->pipelines[dispatchDesc.pipelineIndex];
 
   // These are the base binding indices for each type of textures
-  const uint32_t constantBufferBindingOffset   = lDesc.spirvBindingOffsets.constantBufferOffset;
-  const uint32_t texturesBindingOffset         = lDesc.spirvBindingOffsets.textureOffset;
-  const uint32_t storageTextureAndBufferOffset = lDesc.spirvBindingOffsets.storageTextureAndBufferOffset;
-  const uint32_t samplerBindingOffset          = lDesc.spirvBindingOffsets.samplerOffset;
+  const uint32_t texturesBindingOffset         = lDesc->spirvBindingOffsets.textureOffset;
+  const uint32_t storageTextureAndBufferOffset = lDesc->spirvBindingOffsets.storageTextureAndBufferOffset;
 
   NRDPipeline& pipeline = m_pipelines[dispatchDesc.pipelineIndex];
 
-  std::vector<VkWriteDescriptorSet>  descriptorUpdates(pipeline.numBindings + iDesc.samplersNum,
+  std::vector<VkWriteDescriptorSet>  descriptorUpdates(pipeline.numBindings + iDesc->samplersNum,
                                                        VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr});
-  std::vector<VkDescriptorImageInfo> descriptorImageInfos(pipeline.numBindings + iDesc.samplersNum);
+  std::vector<VkDescriptorImageInfo> descriptorImageInfos(pipeline.numBindings + iDesc->samplersNum);
 
   std::vector<VkImageMemoryBarrier> imageBarriers;
 
-  auto transitionToShaderRead = [&](VkImage image) {
-    VkImageMemoryBarrier barrier = nvvk::makeImageMemoryBarrier(image, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-                                                                VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
-    imageBarriers.push_back(barrier);
+  auto transitionToShaderRead = [](VkImage image) {
+    return nvvk::makeImageMemoryBarrier({
+        .image         = image,
+        .oldLayout     = VK_IMAGE_LAYOUT_GENERAL,
+        .newLayout     = VK_IMAGE_LAYOUT_GENERAL,
+        .srcStageMask  = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        .dstStageMask  = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+    });
   };
-  auto transitionToShaderWrite = [&](VkImage image) {
-    VkImageMemoryBarrier barrier = nvvk::makeImageMemoryBarrier(image, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-                                                                VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
-    imageBarriers.push_back(barrier);
+  auto transitionToShaderWrite = [](VkImage image) {
+    return nvvk::makeImageMemoryBarrier({.image         = image,
+                                         .oldLayout     = VK_IMAGE_LAYOUT_GENERAL,
+                                         .newLayout     = VK_IMAGE_LAYOUT_GENERAL,
+                                         .srcStageMask  = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                         .dstStageMask  = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                         .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                                         .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT});
   };
 
+  // Determine texture descriptor set updates and corresponding image layout transitions
   uint32_t numResourceUpdates = 0;  // Count and index the updates
   for(uint32_t r = 0; r < pDesc.resourceRangesNum; ++r)
   {
@@ -583,7 +615,7 @@ void NRDWrapper::dispatch(VkCommandBuffer commandBuffer, const nrd::DispatchDesc
 
       assert(nrdResource.descriptorType == resourceRange.descriptorType);
 
-      nvvk::Texture* texture = nullptr;
+      nvvk::Image* texture = nullptr;
       if(nrdResource.type == nrd::ResourceType::TRANSIENT_POOL)
       {
         texture = &m_transientTextures[nrdResource.indexInPool];
@@ -597,7 +629,7 @@ void NRDWrapper::dispatch(VkCommandBuffer commandBuffer, const nrd::DispatchDesc
         texture = &m_userTexturePool[(uint32_t)nrdResource.type];
       }
 
-      assert(texture);
+      assert(texture->image && texture->descriptor.imageView);
 
       // We assume, images bound to storage bindings will be written to, while images bound to
       // texture bindings will be read from.
@@ -605,51 +637,19 @@ void NRDWrapper::dispatch(VkCommandBuffer commandBuffer, const nrd::DispatchDesc
       // we might want to be more clever about it by caching transitions between pipelines.
       isStorage ? transitionToShaderWrite(texture->image) : transitionToShaderRead(texture->image);
 
-      VkDescriptorImageInfo& imageInfo = descriptorImageInfos[numResourceUpdates];
-      imageInfo.imageView              = texture->descriptor.imageView;
-      imageInfo.imageLayout            = VK_IMAGE_LAYOUT_GENERAL;
+      descriptorImageInfos[numResourceUpdates] = texture->descriptor;
       ++numResourceUpdates;
     }
   }
+  // Transition all resources into their appropriate state
+  vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
+                       nullptr, 0, nullptr, imageBarriers.size(), imageBarriers.data());
 
-  if(iDesc.samplersInSeparateSet)
-  {
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipelineLayout, 1, 1,
-                            &m_samplerDescriptorSet, 0, nullptr);
-  }
-  else
-  {
-    // Issue "dummy" sampler updates to push the immutable samplers
-    for(uint32_t s = 0; s < iDesc.samplersNum; ++s)
-    {
-      // The push descriptor update for immutable samplers will ignore the sampler in 'samplerInfo'
-      // and instead push the immutable sampler set up when the pipeline was created.
-      VkDescriptorImageInfo& samplerInfo = descriptorImageInfos[numResourceUpdates];
-      VkWriteDescriptorSet&  update      = descriptorUpdates[numResourceUpdates];
-      update.dstBinding                  = samplerBindingOffset + iDesc.samplersBaseRegisterIndex + s;
-      update.descriptorCount             = 1;
-      update.descriptorType              = VK_DESCRIPTOR_TYPE_SAMPLER;
-      update.pImageInfo                  = &samplerInfo;
-
-      ++numResourceUpdates;
-    }
-  }
-
-  VkDescriptorBufferInfo bufferInfo{};
-  bufferInfo.buffer = m_constantBuffer.buffer;
-  bufferInfo.offset = 0;
-  bufferInfo.range  = VK_WHOLE_SIZE;
+  const bool samplersInSeparateSet = iDesc->constantBufferAndSamplersSpaceIndex != iDesc->resourcesSpaceIndex;
+  assert(samplersInSeparateSet);
 
   if(pDesc.hasConstantData)
   {
-    VkWriteDescriptorSet constantBufferUpdate{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr};
-    constantBufferUpdate.dstBinding      = constantBufferBindingOffset;
-    constantBufferUpdate.descriptorCount = 1;
-    constantBufferUpdate.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    constantBufferUpdate.pBufferInfo     = &bufferInfo;
-
-    descriptorUpdates[numResourceUpdates++] = constantBufferUpdate;
-
     if(!dispatchDesc.constantBufferDataMatchesPreviousDispatch)
     {
       {
@@ -685,16 +685,17 @@ void NRDWrapper::dispatch(VkCommandBuffer commandBuffer, const nrd::DispatchDesc
       }
     }
   }
-  // Transition all resources into their appropriate state
-  vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
-                       nullptr, 0, nullptr, imageBarriers.size(), imageBarriers.data());
-
-  // Update the descriptors. Notice how push descriptors don't require us to make sure the
-  // descriptors are not in use anymore.
-  vkCmdPushDescriptorSetKHR(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipelineLayout, 0,
-                            numResourceUpdates, descriptorUpdates.data());
 
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
+
+  // Bind the global set with the immutable samplers and constant buffer
+  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipelineLayout,
+                          iDesc->constantBufferAndSamplersSpaceIndex, 1, &m_samplerConstBufferDescriptorSet, 0, nullptr);
+
+  // Update the texture descriptors. Notice how push descriptors don't require us to make sure the
+  // descriptors are not in use anymore.
+  vkCmdPushDescriptorSetKHR(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipelineLayout,
+                            iDesc->resourcesSpaceIndex, numResourceUpdates, descriptorUpdates.data());
 
   // Go!
   vkCmdDispatch(commandBuffer, dispatchDesc.gridWidth, dispatchDesc.gridHeight, 1);

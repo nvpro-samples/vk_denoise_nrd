@@ -81,8 +81,7 @@ these shader binaries. Refer to [externals/nrd/CMakeLists.txt](externals/nrd/CMa
 supported options, such as normal and roughness encoding. Our sample leaves
 this at default (i.e. linear roughness and RGB10A2 normal encoding).
 
-At CMake configuration time, NRD also creates a shader include file
-'nrd/Shaders/Include/NRDEncoding.hlsli' that will be used to communicate the
+'nrd/Shaders/Include/NRD.hlsli' will be used to communicate the
 chosen normal and roughness encoding to the user's shaders.
 
 ## Integration of NRD
@@ -104,13 +103,12 @@ In this sample we chose the 'black-box library' approach, using a thin wrapper
 around NRD that handles the integration of NRD with Vulkan.
 
 
-### NRD and GLSL
+### NRD and Slang
 
 Even though the the NRD-internal shaders are all precompiled, a few shader
 fragments will be needed in the user's shaders to encode data in a way NRD
-requires. NRD is naturally written in HLSL, but can be instructed to emit
-GLSL-compatible syntax. We achieve this by defining `NRD_GLSL 1` at the top of
-`nrd.glsl` before including `nrd.hlsli`
+requires. Slang is directly compatible with HLSL, so no changes have to be made
+when including NRD.hlsli.
 
 NRD build is using a SPIR-V-enabled DirectX shader compiler "dxc" to
 compile its HLSL shaders into SPIR-V that Vulkan can digest. dxc comes with the
@@ -122,6 +120,12 @@ and build it from source.
 If NRD can't find dxc at CMake configuration time, consider providing CMake
 with `-DNRD_DXC_CUSTOM_PATH=<custom/path/to/dxc>` to point it to the dxc
 executable directly.
+
+### NRD and GLSL
+
+NRD is naturally written in HLSL, but can be instructed to emit
+GLSL-compatible syntax. This can be achieved this by defining `NRD_GLSL 1`
+before including `nrd.hlsli`
 
 ### NRDWrapper
 
@@ -343,17 +347,9 @@ contributions.
 The final image will be composed of the denoised diffuse and specular color plus
 direct lighting. Diffuse and specular are added only if there
 was a hit and albedo is extracted from the base color and metalness information.
-
-
-```glsl
-  vec3 R = vec3(directLighting);
-  if(wasHit)
-  {
-    R += indirectDiff;
-    R += indirectSpec;
-  }
-```
-
+While the ray generation shader wrote out the "demodulated" diffuse and specular
+colors to be denoised, the composition shader brings back the de-modulated 
+detail into the final image.
 
 
 ## Authors and Metadata

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -26,7 +26,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define TINYGLTF_NO_EXTERNAL_IMAGE
-#include "tiny_gltf.h"
+#include <tinygltf/tiny_gltf.h>
 
 #define TINYOBJLOADER_IMPLEMENTATION
-#include "tiny_obj_loader.h"
+#include <tinyobjloader/tiny_obj_loader.h>

@@ -1,33 +1,28 @@
 #-------------------------------------------------------------------------
 # Executable
 #-------------------------------------------------------------------------
-get_filename_component(PROJECT_NAME ${CMAKE_CURRENT_SOURCE_DIR} NAME)
+
 message(STATUS "-------------------------------")
 message(STATUS "Processing Project ${PROJECT_NAME}:")
 
-file(GLOB SOURCE_FILES src/*.cpp src/*.hpp src/*.h)
+file(GLOB CPP_SOURCES src/*.cpp src/*.hpp src/*.h)
 
-_add_package_VulkanSDK()
-_add_package_ImGUI()
-_add_nvpro_core_lib()
+add_executable(${PROJECT_NAME} ${CPP_SOURCES})
 
-add_executable(${PROJECT_NAME} ${SOURCE_FILES} ${COMMON_SOURCE_FILES} ${PACKAGE_SOURCE_FILES})
-
-target_include_directories(${PROJECT_NAME} PRIVATE ${SAMPLES_COMMON_DIR} ${ADVANCE_DIR})
+find_package(OpenMP REQUIRED COMPONENTS CXX)
 target_compile_definitions(${PROJECT_NAME} PRIVATE IMGUI_DEFINE_MATH_OPERATORS)
-source_group("Other"  FILES ${COMMON_SOURCE_FILES} ${PACKAGE_SOURCE_FILES})
 
-target_link_libraries(${PROJECT_NAME} NRD)
-
-# Adding libraries
-target_link_libraries (${PROJECT_NAME} 
-        # All nvpro-core dependencies  
-        nvpro_core                       #  "                 " 
-        optimized ${LIBRARIES_OPTIMIZED} #  "                 " 
-        debug ${LIBRARIES_DEBUG}         #  "                 " 
-        ${PLATFORM_LIBRARIES}            #  "                 " 
-        ${UNIXLINKLIBS}                  #  "                 " 
-        )
+target_link_libraries(${PROJECT_NAME} PRIVATE
+  nvpro2::nvapp
+  nvpro2::nvshaders_host
+  nvpro2::nvutils
+  nvpro2::nvvk
+  nvpro2::nvgui
+  nvpro2::nvvkgltf
+  nvpro2::nvaftermath
+  NRD
+  OpenMP::OpenMP_CXX
+)
 
 if(MSVC)
     add_definitions(-D_CRT_SECURE_NO_WARNINGS)
@@ -40,31 +35,56 @@ endif()
 set(SHD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
 set(NRD_SHD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../externals/nrd/Shaders/Include)
 
-# Local shaders
-file(GLOB SHD_HDR  ${SHD_DIR}/*.glsl ${SHD_DIR}/*.h)
-file(GLOB SHD_SRC ${SHD_DIR}/*.vert ${SHD_DIR}/*.frag ${SHD_DIR}/*.rgen ${SHD_DIR}/*.rchit ${SHD_DIR}/*.rahit ${SHD_DIR}/*.rmiss ${SHD_DIR}/*.comp)
+# Local shaders - Slang (new)
+file(GLOB SHD_SLANG_HDR ${SHD_DIR}/*.h ${NRD_SHD_DIR}/*.hlsli)
+file(GLOB SHD_SLANG_SRC ${SHD_DIR}/*.slang)
+
+# Shaders to the build
+list(APPEND SHADER_SLANG_FILES
+    ${NVSHADERS_DIR}/nvshaders/sky_physical.slang
+    ${NVSHADERS_DIR}/nvshaders/sky_simple.slang
+    ${NVSHADERS_DIR}/nvshaders/hdr_prefilter_diffuse.slang
+    ${NVSHADERS_DIR}/nvshaders/hdr_prefilter_glossy.slang
+    ${NVSHADERS_DIR}/nvshaders/hdr_dome.slang
+    ${NVSHADERS_DIR}/nvshaders/hdr_integrate_brdf.slang
+    ${NVSHADERS_DIR}/nvshaders/tonemapper.slang
+
+    ${SHD_DIR}/nrd.slang
+    ${SHD_DIR}/nrd_rmiss.slang
+    ${SHD_DIR}/nrd_rchit.slang
+    ${SHD_DIR}/pathtrace_rchit.slang
+    ${SHD_DIR}/pathtrace_rahit.slang
+    ${SHD_DIR}/pathtrace_rmiss.slang
+    ${SHD_DIR}/compositing.slang
+    ${SHD_DIR}/taa.slang
+)
+
+set(SHADER_OUTPUT_DIR "${CMAKE_BINARY_DIR}/_autogen")
 
 # Compiling shaders to Spir-V header
-compile_glsl(
-    SOURCE_FILES ${SHD_SRC}
-    HEADER_FILES ${SHD_HDR}
-    DST "${CMAKE_CURRENT_SOURCE_DIR}/_autogen" 
-    VULKAN_TARGET "vulkan1.3"
-    HEADER ON
-    DEPENDENCY ${Vulkan_BUILD_DEPENDENCIES}
-    FLAGS -I${SHD_DIR} -I${NVPRO_CORE_DIR} -I${NRD_SHD_DIR}
-    )
+compile_slang(
+    "${SHADER_SLANG_FILES}"
+    "${SHADER_OUTPUT_DIR}"
+    GENERATED_SHADER_HEADERS
+    EXTRA_FLAGS "-I${NVSHADERS_DIR}" "-I${SHD_DIR}" "-I${NRD_SHD_DIR}"
+)
 
-target_sources(${PROJECT_NAME} PRIVATE ${GLSL_SOURCES} ${GLSL_HEADERS})
-source_group("Shaders/src"   FILES ${GLSL_SOURCES} )
-source_group("Shaders/hdr"   FILES ${GLSL_HEADERS} )
+message(STATUS "NVSHADERS_DIR ${NVSHADERS_DIR}")
 
-# Copy binary
-_finalize_target( ${PROJECT_NAME} )
+source_group("Shaders" FILES  ${SHD_SLANG_SRC} ${SHD_SLANG_HDR} ${SHADER_SLANG_FILES})
+source_group("Shaders/Compiled" FILES ${GENERATED_SHADER_HEADERS})
+source_group("Documentation" FILES "${CMAKE_CURRENT_SOURCE_DIR}/../README.md")
 
-message(STATUS "NRD_DLL: $<TARGET_FILE:NRD>")
+target_sources(${PROJECT_NAME} PRIVATE ${SHD_SLANG_SRC} ${SHD_SLANG_HDR} ${GENERATED_SHADER_HEADERS})
 
-_copy_files_to_target(${PROJECT_NAME} "$<TARGET_FILE:NRD>")
+# Let it find the "./_autogen/" shaders
+target_include_directories(${PROJECT_NAME} PRIVATE ${SHADER_OUTPUT_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
 
-install(TARGETS NRD CONFIGURATIONS Release DESTINATION "bin_${ARCH}")
-install(TARGETS NRD CONFIGURATIONS Debug DESTINATION "bin_${ARCH}_debug")
+
+download_files(FILENAMES "ABeautifulGame.zip" EXTRACT)
+download_files(FILENAMES "daytime.hdr" "environment.hdr" "hdri-19_color_small.hdr" "std_env.hdr")
+
+add_project_definitions(${PROJECT_NAME})
+
+# Make Visual Studio use this project as the startup project
+set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${PROJECT_NAME})

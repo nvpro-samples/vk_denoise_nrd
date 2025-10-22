@@ -7,3 +7,6 @@ spv/*
 _build/*
 */_build/*
 externals/*
+/.cache/
+/_bin/
+/_downloaded_resources/
