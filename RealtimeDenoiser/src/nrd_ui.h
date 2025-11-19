@@ -92,7 +92,7 @@ static void render(nrd::ReblurSettings& reblurSettings, nrd::RelaxSettings& rela
     PE::entry(
         "Max # of Stabilization Frames",
         [&]() {
-          return ImGui::SliderInt("#Relax Radius", (int*)&reblurSettings.maxStabilizedFrameNum, 0.0, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
+          return ImGui::SliderInt("#Relax Radius", (int*)&reblurSettings.maxStabilizedFrameNum, 0, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
         },
         "maximum number of linearly accumulated frames for stabilized radiance \"0\" disables the stabilization pass");
 
@@ -246,9 +246,7 @@ specular pre-pass for tracking purposes only)");
 
     PE::entry(
         "Fast History Clamping Color Box Sigma Scale",
-        [&]() {
-          return ImGui::SliderFloat("#Relax Radius", &relaxSettings.fastHistoryClampingSigmaScale, 1.0f, 3.0f);
-        },
+        [&]() { return ImGui::SliderFloat("#Relax Radius", &relaxSettings.fastHistoryClampingSigmaScale, 1.0f, 3.0f); },
         "standard deviation scale of color box for clamping main slow history to responsive fast history");
 
     PE::entry(

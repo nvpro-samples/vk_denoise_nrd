@@ -10,6 +10,8 @@ file(GLOB CPP_SOURCES src/*.cpp src/*.hpp src/*.h)
 add_executable(${PROJECT_NAME} ${CPP_SOURCES})
 
 find_package(OpenMP REQUIRED COMPONENTS CXX)
+add_compile_options(-fno-omit-frame-pointer)
+
 target_compile_definitions(${PROJECT_NAME} PRIVATE IMGUI_DEFINE_MATH_OPERATORS)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
@@ -75,7 +77,7 @@ source_group("Shaders" FILES  ${SHD_SLANG_SRC} ${SHD_SLANG_HDR} ${SHADER_SLANG_F
 source_group("Shaders/Compiled" FILES ${GENERATED_SHADER_HEADERS})
 source_group("Documentation" FILES "${CMAKE_CURRENT_SOURCE_DIR}/../README.md")
 
-target_sources(${PROJECT_NAME} PRIVATE ${SHD_SLANG_SRC} ${SHD_SLANG_HDR} ${GENERATED_SHADER_HEADERS})
+target_sources(${PROJECT_NAME} PRIVATE ${SHD_SLANG_SRC} ${SHD_SLANG_HDR} ${GENERATED_SHADER_HEADERS} ${CMAKE_CURRENT_SOURCE_DIR}/../README.md)
 
 # Let it find the "./_autogen/" shaders
 target_include_directories(${PROJECT_NAME} PRIVATE ${SHADER_OUTPUT_DIR} ${CMAKE_CURRENT_SOURCE_DIR})

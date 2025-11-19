@@ -355,7 +355,7 @@ public:
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_compositionPipeline);
 
     vkCmdPushDescriptorSetKHR(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_compositionPipelineLayout, 0,
-                              writes.size(), writes.data());
+                              (uint32_t)writes.size(), writes.data());
     vkCmdPushConstants(commandBuffer, m_rtPipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof(shaderio::RtxPushConstant), &m_pushConst);
 
     VkExtent2D group_counts = getGroupCounts(m_gBuffers.getSize(), 16);
@@ -381,8 +381,8 @@ public:
     bindImage(shaderio::TaaBindings::eInImage, eGBufDenoisedUnpacked);
     bindImage(shaderio::TaaBindings::eOutImage, eGBufTaa);
 
-    vkCmdPushDescriptorSetKHR(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_taaPipelineLayout, 0, writes.size(),
-                              writes.data());
+    vkCmdPushDescriptorSetKHR(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_taaPipelineLayout, 0,
+                              (uint32_t)writes.size(), writes.data());
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_taaPipeline);
     float alpha = 0.1F;
@@ -549,8 +549,9 @@ public:
         PropertyEditor::begin();
 
         const char* const items[] = {"ReLAX", "ReBLUR", "Reference"};
-        if(PropertyEditor::entry("Method",
-                                 [&]() { return ImGui::ListBox("Method", &m_pushConst.method, items, arraySize(items)); }))
+        if(PropertyEditor::entry("Method", [&]() {
+             return ImGui::ListBox("Method", &m_pushConst.method, items, (int)arraySize(items));
+           }))
         {
           reset = true;
         }

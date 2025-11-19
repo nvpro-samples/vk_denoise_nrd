@@ -1,4 +1,4 @@
-# Integration of NRD to an existing application
+# Integration of NRD to a Vulkan application
  
 ![A screenshot of the sample. It shows a path-traced Cornell box, denoised using NRD.](docs/nrd_denoiser.png)
 

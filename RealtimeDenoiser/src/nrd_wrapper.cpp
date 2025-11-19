@@ -643,7 +643,7 @@ void NRDWrapper::dispatch(VkCommandBuffer commandBuffer, const nrd::DispatchDesc
   }
   // Transition all resources into their appropriate state
   vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
-                       nullptr, 0, nullptr, imageBarriers.size(), imageBarriers.data());
+                       nullptr, 0, nullptr, (uint32_t)imageBarriers.size(), imageBarriers.data());
 
   const bool samplersInSeparateSet = iDesc->constantBufferAndSamplersSpaceIndex != iDesc->resourcesSpaceIndex;
   assert(samplersInSeparateSet);
