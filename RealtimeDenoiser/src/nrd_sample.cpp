@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -638,7 +638,7 @@ public:
     NVVK_DBG_SCOPE(cmd);
 
     // Get camera info
-    float view_aspect_ratio = (float)m_viewSize.x / m_viewSize.y;
+    double view_aspect_ratio = (double)m_viewSize.x / m_viewSize.y;
 
     m_frameInfo.prevMVP = m_frameInfo.proj * m_frameInfo.view;
 
@@ -1225,10 +1225,10 @@ private:
       return;
 
     ImGui::Begin("Viewport");  // ImGui, picking within "viewport"
-    auto  mouse_pos        = ImGui::GetMousePos();
-    auto  main_size        = ImGui::GetContentRegionAvail();
-    auto  corner           = ImGui::GetCursorScreenPos();  // Corner of the viewport
-    float aspect_ratio     = main_size.x / main_size.y;
+    auto   mouse_pos       = ImGui::GetMousePos();
+    auto   main_size       = ImGui::GetContentRegionAvail();
+    auto   corner          = ImGui::GetCursorScreenPos();  // Corner of the viewport
+    double aspect_ratio    = main_size.x / main_size.y;
     mouse_pos              = mouse_pos - corner;
     ImVec2 local_mouse_pos = mouse_pos / main_size;
     ImGui::End();
@@ -1237,7 +1237,7 @@ private:
 
     // Finding current camera matrices
     const auto& view = m_cameraManip->getViewMatrix();
-    auto        proj = glm::perspectiveRH_ZO(glm::radians(m_cameraManip->getFov()), aspect_ratio, 0.1F, 1000.0F);
+    auto        proj = glm::perspectiveRH_ZO(glm::radians(m_cameraManip->getFov()), aspect_ratio, 0.1, 1000.0);
     proj[1][1] *= -1;
 
     // Setting up the data to do picking
@@ -1266,10 +1266,10 @@ private:
     }
 
     // Find where the hit point is and set the interest position
-    glm::vec3 world_pos = glm::vec3(pr.worldRayOrigin + pr.worldRayDirection * pr.hitT);
-    glm::vec3 eye;
-    glm::vec3 center;
-    glm::vec3 up;
+    glm::vec3  world_pos = glm::vec3(pr.worldRayOrigin + pr.worldRayDirection * pr.hitT);
+    glm::dvec3 eye;
+    glm::dvec3 center;
+    glm::dvec3 up;
     m_cameraManip->getLookat(eye, center, up);
     m_cameraManip->setLookat(eye, world_pos, up, false);
 
