@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -42,10 +42,9 @@
 //        float A = 3.0f;     // constant value (m)
 //        float B = 0.1f;     // viewZ based linear scale (m / units) (1 m - 10 cm, 10 m - 1 m, 100 m - 10 m)
 //        float C = 10.0f;    // roughness based scale, "> 1" to get bigger hit distance for low roughness
-//        float D = -25.0f;   // roughness based exponential scale, "< 0", absolute value should be big enough to collapse "exp2( D * roughness ^ 2 )" to "~0" for roughness = 1
 //    };
-const static float4 gDiffHitDistParams = float4(3.0f, 0.1f, 20.0f, -25.0f);
-const static float4 gSpecHitDistParams = float4(3.0f, 0.1f, 20.0f, -25.0f);
+const static float3 gDiffHitDistParams = float3(3.0f, 0.1f, 20.0f);
+const static float3 gSpecHitDistParams = float3(3.0f, 0.1f, 20.0f);
 
 //-------------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------------

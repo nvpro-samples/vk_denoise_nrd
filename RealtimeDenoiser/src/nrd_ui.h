@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION
  * SPDX-License-Identifier: Apache-2.0
  */
 #pragma once
@@ -23,7 +23,7 @@
 #include <NRDSettings.h>
 
 namespace Nrd_ui {
-static void render(nrd::ReblurSettings& reblurSettings, nrd::RelaxSettings& relaxSettings)
+void render(nrd::ReblurSettings& reblurSettings, nrd::RelaxSettings& relaxSettings)
 {
   namespace PE = nvgui::PropertyEditor;
   if(PE::treeNode("ReBlUR"))
@@ -199,8 +199,6 @@ specular pre-pass for tracking purposes only)");
         },
         "maximum number of linearly accumulated frames in fast history (less than maxAccumulatedFrameNum )");
 
-
-    uint32_t historyFixFrameNum = 3;
     PE::entry(
         "History Fix Frame Num",
         [&]() { return ImGui::SliderInt("#Relax Radius", (int*)&relaxSettings.historyFixFrameNum, 0, 3); },

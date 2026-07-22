@@ -775,8 +775,6 @@ public:
 
         m_nrdSettings.isMotionVectorInWorldSpace = true;
 
-        m_nrdSettings.isBaseColorMetalnessAvailable = true;
-
         // We want to visualize the denoiser's debug texture
         m_nrdSettings.enableValidation = true;
 
@@ -786,6 +784,15 @@ public:
       switch(m_pushConst.method)
       {
         case NRD_REBLUR: {
+          // Enable NRD's material test so metals (MATERIAL_ID_METAL) are not denoised
+          // together with their non-metallic neighbours. The default threshold of 4.0
+          // would clamp all our material IDs (0..3) together and disable the test.
+          // Diffuse is strict (metals have ~no diffuse, must stay isolated). Specular
+          // groups DEFAULT+METAL+PSR together so a single reflective surface that is
+          // split into METAL and PSR pixels does not fragment its highlight; only HAIR
+          // stays isolated for specular.
+          m_reblurSettings.minMaterialForDiffuse  = MATERIAL_ID_DEFAULT;  // 0: strict per-material
+          m_reblurSettings.minMaterialForSpecular = MATERIAL_ID_PSR;      // 2: default+metal+psr share specular
           m_nrd->setREBLURSettings(m_reblurSettings);
 
           nrd::Identifier denoiser = nrd::Identifier(nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR);
@@ -794,6 +801,10 @@ public:
           break;
         }
         case NRD_RELAX: {
+          // See REBLUR case above: the default minMaterial of 4.0 disables the material
+          // test for our material IDs (0..3), letting metals bleed into neighbours.
+          m_relaxSettings.minMaterialForDiffuse  = MATERIAL_ID_DEFAULT;  // 0: strict per-material
+          m_relaxSettings.minMaterialForSpecular = MATERIAL_ID_PSR;      // 2: default+metal+psr share specular
           m_nrd->setRELAXSettings(m_relaxSettings);
           nrd::Identifier denoiser = nrd::Identifier(nrd::Denoiser::RELAX_DIFFUSE_SPECULAR);
           // Perform the denoising!
@@ -946,9 +957,8 @@ private:
     nrdTexturePool[size_t(nrd::ResourceType::OUT_SPEC_RADIANCE_HITDIST)] = poolTextureFromGBufTexture(eGBufOutSpecRadianceHitDist);
     nrdTexturePool[size_t(nrd::ResourceType::IN_NORMAL_ROUGHNESS)] = poolTextureFromGBufTexture(eGBufNormalRoughness);
     nrdTexturePool[size_t(nrd::ResourceType::IN_VIEWZ)]            = poolTextureFromGBufTexture(eGBufViewZ);
-    nrdTexturePool[size_t(nrd::ResourceType::IN_BASECOLOR_METALNESS)] = poolTextureFromGBufTexture(eGBufLdr);
-    nrdTexturePool[size_t(nrd::ResourceType::OUT_VALIDATION)]         = poolTextureFromGBufTexture(eGBufOutDebugView);
-    nrdTexturePool[size_t(nrd::ResourceType::IN_MV)]                  = poolTextureFromGBufTexture(eGBufMotionVectors);
+    nrdTexturePool[size_t(nrd::ResourceType::IN_MV)]               = poolTextureFromGBufTexture(eGBufMotionVectors);
+    nrdTexturePool[size_t(nrd::ResourceType::OUT_VALIDATION)]      = poolTextureFromGBufTexture(eGBufOutDebugView);
 
     m_nrd.reset();
     m_nrd = std::make_unique<NRDWrapper>(m_alloc, m_app->getQueue(0), m_samplerPool, uint16_t(m_viewSize.x),

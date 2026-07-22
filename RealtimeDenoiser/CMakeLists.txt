@@ -35,7 +35,7 @@ endif()
 # Shaders in project
 #
 set(SHD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
-set(NRD_SHD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../externals/nrd/Shaders/Include)
+set(NRD_SHD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../externals/nrd/Shaders)
 
 # Local shaders - Slang (new)
 file(GLOB SHD_SLANG_HDR ${SHD_DIR}/*.h ${NRD_SHD_DIR}/*.hlsli)
