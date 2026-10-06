@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.11...3.31)
+cmake_minimum_required(VERSION 3.24...4.4.4)
 
 project(vk_denoise_nrd LANGUAGES C CXX)
 
@@ -9,6 +9,17 @@ include(FetchContent)
 
 #-------------------------------------------------------------------------------
 # NRD dependency
+
+# Download a specific version of NRD's MathLib, so that we can still compile on
+# CMake 3.28.3, the version provided by Ubuntu 24.04 LTS' packages.
+# This can be removed once https://github.com/NVIDIA-RTX/NRD/pull/112 is merged in.
+FetchContent_Declare(
+	mathlib
+	DOWNLOAD_EXTRACT_TIMESTAMP 1
+	DOWNLOAD_NO_PROGRESS 1
+	URL "https://github.com/NVIDIA-RTX/MathLib/archive/e3eee9362880b708a315b9946df51dae332bb46f.zip"
+)
+FetchContent_MakeAvailable(mathlib)
 
 # Tell CMake where to find NRDSDK, how to get it and where to place it locally.
 # CMake will automatically look for CMakeLists.txt in there
